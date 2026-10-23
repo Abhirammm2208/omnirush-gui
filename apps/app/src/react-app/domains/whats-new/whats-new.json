@@ -3,6 +3,21 @@
   "schema": 1,
   "cli": [
     {
+      "version": "2.6.9",
+      "date": "2026-10-23",
+      "new": [
+        "/btw <question> asks a quick side question about the chat, while the agent works or when it is idle. The answer shows above the prompt and is not added to the chat."
+      ],
+      "improved": [
+        "The agent handles small tasks with less overhead: it reads related files together, keeps a todo list only for longer work, and skips guides a simple change doesn't need, so small tasks finish faster.",
+        "Runs with -p wait longer when the model service is busy instead of stopping early."
+      ],
+      "fixed": [
+        "The CLI no longer keeps piling up memory when its screen stops reading (for example a paused or frozen terminal).",
+        "Under a required sandbox, sandbox status now points to `omnirush sandbox setup`."
+      ]
+    },
+    {
       "version": "2.6.8",
       "date": "2026-10-22",
       "new": [
@@ -244,16 +259,21 @@
   "desktop": [
     {
       "version": "3.7.4",
-      "date": "2026-10-22",
+      "date": "2026-10-23",
       "new": [
+        "/btw <question> asks a quick side question about the chat, while the agent works or when it is idle. The answer shows above the message box and is not added to the chat.",
         "More ways to make the app yours in Settings > Appearance: three new themes (Graphite, Paper and Nocturne), an accent colour of your choice on any theme, separate interface and code fonts, compact spacing, and your own corner radius and text size.",
         "Wallpaper: put a picture of your own behind the workspace, dim it, and choose how see-through and blurred the panels over it are. Panels stay solid when your computer is set to reduce transparency."
       ],
       "improved": [
         "Keep up to 20 custom themes, each with its own name, instead of one. Pick, edit, delete, share or import each of them.",
-        "The accent colour is checked for contrast: you see a warning and a nearby readable colour when buttons or focus rings would be hard to see."
+        "The accent colour is checked for contrast: you see a warning and a nearby readable colour when buttons or focus rings would be hard to see.",
+        "The chat sidebar gives its height to your chats: new chat and search share a row, the occasional places are one row of icons, and a project shows 10 chats before Show more.",
+        "The agent handles small tasks with less overhead: it reads related files together, keeps a todo list only for longer work, and skips guides a simple change doesn't need."
       ],
-      "fixed": []
+      "fixed": [
+        "The app no longer keeps piling up memory when a window stops reading its updates (for example while it is frozen or suspended)."
+      ]
     },
     {
       "version": "3.7.3",
