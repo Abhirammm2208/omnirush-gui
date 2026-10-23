@@ -123,7 +123,9 @@ function statusNow() {
     enabled: server?.enabled === true,
     // The agent's own display works without desktop access (no helper, Wayland), so only "off" is unavailable.
     supported: supported(),
-    message: server?.enabled ? (supported() ? null : "Computer use is unavailable on this desktop.") : server?.setting?.message ?? (server ? "Computer use is turned off." : null),
+    message: server?.enabled ? (supported() ? null : "Computer use is unavailable on this desktop.") : server?.unavailable ?? server?.setting?.message ?? (server ? "Computer use is turned off." : null),
+    // The models that can use it (null: any).
+    models: server?.setting?.models ?? null,
     mode: server?.mode ?? "normal",
     sessions,
   };

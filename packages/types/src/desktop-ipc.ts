@@ -923,6 +923,8 @@ export type ComputerUseStatus = {
   supported: boolean;
   /** Why it is off or unavailable (people-facing), when it is. */
   message: string | null;
+  /** The models that can use computer use (null: any). */
+  models?: string[] | null;
   mode: "careful" | "normal" | "auto";
   sessions: ComputerUseSessionState[];
 };

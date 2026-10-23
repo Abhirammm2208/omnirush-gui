@@ -93,9 +93,10 @@ export function computerUseSetting({ env = process.env, block, client, platform 
   // The environment turns computer use on (tests, support), never the person's real screen: that stays the server's.
   if (ON.includes(asked)) return { ...server, enabled: true, virtual_display: true, source: "env", reason: null };
   if (!isRecord(block)) return { ...server, enabled: false, source: "default", reason: "no_switch" };
-  if (!server.enabled) return { ...server, source: "server", reason: "off" };
+  // Off: say why when the block shows it (this OS or this app not in the rollout), so people get a plain reason.
+  if (!server.enabled) return { ...server, source: "server", reason: server.os && !server.os.includes(osName(platform)) ? "os" : server.clients && client && !server.clients.includes(client) ? "client" : "off", os_name: osName(platform) };
   if (server.clients && client && !server.clients.includes(client)) return { ...server, enabled: false, source: "server", reason: "client" };
-  if (server.os && !server.os.includes(osName(platform))) return { ...server, enabled: false, source: "server", reason: "os" };
+  if (server.os && !server.os.includes(osName(platform))) return { ...server, enabled: false, source: "server", reason: "os", os_name: osName(platform) };
   if (!server.real_screen && !server.virtual_display) return { ...server, enabled: false, source: "server", reason: "no_display" };
   return { ...server, source: "server", reason: null };
 }
@@ -104,6 +105,29 @@ export function computerUseSetting({ env = process.env, block, client, platform 
 export function modelAllowed(setting, modelId) {
   if (!setting?.enabled) return false;
   return !Array.isArray(setting.models) || setting.models.includes(String(modelId ?? ""));
+}
+
+const OS_LABELS = { macos: "macOS", windows: "Windows", linux: "Linux" };
+
+/** Where the person turns their own screen on for the account (the web console only; the apps cannot). */
+export const ACCOUNT_REAL_SCREEN_URL = "https://omnirush.ai/console/account#computer-use";
+
+/** Why computer use is not available here, in plain words for people; null while it is on. */
+export function unavailableMessage(setting) {
+  if (!setting || setting.enabled) return null;
+  if (setting.reason === "os") return `Computer use is not available on ${OS_LABELS[setting.os_name] ?? "this system"} yet.`;
+  if (setting.reason === "client") return "Computer use is not available in this app yet.";
+  if (setting.reason === "env") return "Computer use is off on this computer (OMNIRUSH_COMPUTER_USE=0).";
+  if (setting.reason === "no_switch") return "Computer use is not ready yet: sign in and stay online once so the app can check your account.";
+  return setting.message ?? "Computer use is not turned on for your account yet.";
+}
+
+// Words that ask for something on a screen: a browser, an app, clicks, typing into a window.
+const SCREEN_INTENT = /(?:^|[.,;!]\s*|\b(?:and|then|please|to)\s+)(?:double[- ])?click\b|\b(?:my (?:browser|screen|desktop|mouse|computer)|(?:use|open|launch|start) (?:the |a |my )?(?:browser|chrome|firefox|edge|safari|app|application|program)|screenshot|computer use|take over my|fill (?:in|out) (?:the |this )?form)\b/i;
+
+/** Whether a prompt asks for something done on a screen (use my browser, click, open an app). */
+export function screenIntent(text) {
+  return typeof text === "string" && SCREEN_INTENT.test(text);
 }
 
 /** The message people see when computer use is off. */

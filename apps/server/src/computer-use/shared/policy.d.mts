@@ -25,11 +25,16 @@ export type ComputerUseBlock = {
 export type ComputerUseSetting = ComputerUseBlock & {
   source: "env" | "server" | "default";
   reason: null | "env" | "no_switch" | "off" | "client" | "os" | "no_display";
+  /** This device's OS (macos, windows, linux) when computer use is off for it. */
+  os_name?: string;
 };
 
 export function normalizeComputerUse(block: unknown): ComputerUseBlock;
 export function computerUseSetting(options?: { env?: Record<string, string | undefined>; block?: unknown; client?: "cli" | "desktop"; platform?: string }): ComputerUseSetting;
 export function modelAllowed(setting: ComputerUseSetting | ComputerUseBlock | null | undefined, modelId: unknown): boolean;
+export const ACCOUNT_REAL_SCREEN_URL: string;
+export function unavailableMessage(setting: { enabled?: boolean; reason?: string | null; os_name?: string; message?: string | null } | null | undefined): string | null;
+export function screenIntent(text: unknown): boolean;
 export function offMessage(setting: { message?: string | null } | null | undefined): string;
 
 export const REAL_SCREEN_DEFAULT: boolean;
