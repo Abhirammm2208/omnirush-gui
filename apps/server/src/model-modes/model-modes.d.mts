@@ -15,3 +15,5 @@ export function modelForMode<T extends ModeCatalogEntry>(catalog: readonly T[] |
 export function modeSwitchNote(from: string, to: string, mode: ModelMode): string;
 export function notInModeMessage(mode?: ModelMode | null): string;
 export function modeHeaders(box: unknown): Record<string, string>;
+export type ServerModelStart = { start: ModelMode; switchable: boolean; revision: string | null };
+export function serverModelStart(localBox: unknown, modelId: string | null | undefined): ServerModelStart | null;

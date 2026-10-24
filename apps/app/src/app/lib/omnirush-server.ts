@@ -540,6 +540,12 @@ export type OmniRushWorkspaceBox = {
   setup?: OmniRushWorkspaceBoxSetup | null;
   /** Asked for one chat: it started on this computer before the sandbox was required and stays here. */
   chatKept?: boolean;
+  /** How a new chat on each model starts (the server's local_box.model_start). Older servers: absent or null. */
+  modelStart?: Record<string, { start: "native" | "box"; switchable: boolean }> | null;
+  /** The local_box policy revision new chats pin. Older servers: absent. */
+  revision?: string | null;
+  /** Asked for one chat: its pin (where it runs, the revision it started under); null before its first prompt. */
+  chatPin?: { box: boolean; revision: string | null } | null;
   /** Servers in the sandbox open at the same port on this computer's 127.0.0.1 (Docker/Podman). Older servers: absent. */
   ports?: Array<{ port: number; url: string; line: string }>;
 };

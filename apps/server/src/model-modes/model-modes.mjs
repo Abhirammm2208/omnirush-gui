@@ -75,3 +75,20 @@ export function notInModeMessage(mode = null) {
 export function modeHeaders(box) {
   return box ? { [BOX_HEADER]: "1" } : {};
 }
+
+/**
+ * How a new chat on `modelId` starts, as the server resolved it
+ * (GET /collect/capabilities local_box.model_start, with the policy's
+ * `revision`): { start: "native" | "box", switchable, revision }, or null
+ * when the server does not say (an older server, a model it does not list):
+ * the caller then decides from the model's modes and the level. A chat pins
+ * what it started with (its model, where it ran, the revision) and never
+ * moves; a different choice is a new chat.
+ */
+export function serverModelStart(localBox, modelId) {
+  const table = localBox && typeof localBox === "object" ? localBox.model_start : null;
+  const entry = table && typeof table === "object" && typeof modelId === "string" ? table[modelId] : null;
+  if (!entry || typeof entry !== "object" || (entry.start !== "native" && entry.start !== "box")) return null;
+  const revision = typeof localBox.revision === "string" && /^lb1:[0-9a-f]{12}$/.test(localBox.revision) ? localBox.revision : null;
+  return { start: entry.start, switchable: entry.switchable === true, revision };
+}

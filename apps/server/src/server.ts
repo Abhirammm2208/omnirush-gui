@@ -209,7 +209,8 @@ import { omnirushMcpPolicyPluginPath } from "./omnirush-extensions-plugin-path.j
 import { isOmniRushUiMcpRegistryEntry } from "./omnirush-ui-mcp-command.js";
 import { describeIgnored, type McpAllowEntry } from "./mcp-allow/mcp-allow.mjs";
 import { omnirushModelWantsReasoningSummary, readOmniRushModelCatalog } from "./omnirush-model-catalog.js";
-import { modelAllowedIn, modelModes, projectMode } from "./model-modes/model-modes.mjs";
+import { modelAllowedIn, modelModes, projectMode, serverModelStart } from "./model-modes/model-modes.mjs";
+import { serverLocalBox } from "./box/launch.js";
 import {
   SUBAGENT_MODEL_FALLBACK_TRACE,
   readSubagentModelSetting,
@@ -2127,6 +2128,8 @@ export async function proxyOpencodeV2Request(input: {
   // A reopened chat's turns before this prompt: its turn numbers (uploads and box checkpoints) carry on from them.
   const turnsBefore = capture && uploadedSessionId && engine ? await turnsBeforeCapture(capture, uploadedSessionId, engine) : 0;
   // The Linux sandbox (box/): a prompt of a workspace whose box is on starts the box, and takes the turn's checkpoint when it is captured.
+  // One pin per chat: a chat that runs in the box is not moved to this computer when its project's box is off.
+  if (promptDispatch && sessionId && await boxServiceFor(input.config).pinnedBoxGone(sessionId, input.workspace)) throw new ApiError(409, "chat_pinned_box", PINNED_BOX_MESSAGE);
   const boxInfo = promptDispatch && sessionId
     ? await boxServiceFor(input.config).beforePrompt(sessionId, input.workspace, { capture: Boolean(uploadedSessionId && engine), turnsBefore, nativeModel: await promptsNativeOnlyModel(input.config, body) })
     : null;
@@ -2566,6 +2569,7 @@ export async function proxyOpencodeRequest(input: {
   const turnsBefore = capture && captured && uploadedSessionId && workspace && !steer && isUploadPromptDispatch(method, proxyPath)
     ? await turnsBeforeCapture(capture, uploadedSessionId, engineTarget(baseUrl, headers, search))
     : 0;
+  if (workspace && uploadedSessionId && isUploadPromptDispatch(method, proxyPath) && await boxServiceFor(input.config).pinnedBoxGone(uploadedSessionId, workspace)) throw new ApiError(409, "chat_pinned_box", PINNED_BOX_MESSAGE);
   const boxInfo = workspace && uploadedSessionId && isUploadPromptDispatch(method, proxyPath)
     ? await boxServiceFor(input.config).beforePrompt(uploadedSessionId, workspace, { capture: captured && !steer, turnsBefore, nativeModel: await promptsNativeOnlyModel(input.config, body) })
     : null;
@@ -7868,10 +7872,14 @@ function parseWorkspaceExportSensitiveMode(input: string | null): WorkspaceExpor
   throw new ApiError(400, "invalid_workspace_export_sensitive_mode", `Invalid workspace export sensitive mode: ${trimmed}`);
 }
 
+const PINNED_BOX_MESSAGE = "This chat runs in the sandbox. Turn the sandbox back on for this project, or start a new chat.";
+
 /**
- * Whether a prompt request names an omnirush.ai model that runs only on this
- * computer (its catalog `modes` without "box": Kimi). Such a chat is exempt
- * from the required sandbox (box/service.ts beforePrompt).
+ * Whether a prompt request names an omnirush.ai model whose new chats start on
+ * this computer and cannot be switched: the server's local_box.model_start
+ * when it says (start "native", not switchable), else the catalog `modes`
+ * without "box" (Kimi). Such a chat is exempt from the box
+ * (box/service.ts beforePrompt).
  */
 async function promptsNativeOnlyModel(config: ServerConfig, body: string | ArrayBuffer | undefined): Promise<boolean> {
   if (body === undefined) return false;
@@ -7883,6 +7891,8 @@ async function promptsNativeOnlyModel(config: ServerConfig, body: string | Array
   }
   const model = isRecord(parsed) && isRecord(parsed.model) ? parsed.model : null;
   if (!model || model.providerID !== "omnirush" || typeof model.modelID !== "string") return false;
+  const start = serverModelStart(serverLocalBox(runtimeStorageDir(config)), model.modelID);
+  if (start) return start.start === "native" && !start.switchable;
   const entry = (await readOmniRushModelCatalog(config)).find((candidate) => candidate.id === model.modelID);
   return Boolean(entry?.modes) && !modelAllowedIn(entry, "box") && modelAllowedIn(entry, "native");
 }

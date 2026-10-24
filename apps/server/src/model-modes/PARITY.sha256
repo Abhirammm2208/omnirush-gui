@@ -1,4 +1,4 @@
 # Per-model modes (native / box) and the box header: the same files in omnirush-cli (src/model-modes/) and omnirush-gui (apps/server/src/model-modes/).
 # A change to one must be ported to the other and this list updated in both.
-a3b32b5e5abff4fb47c2a4c49dea6059cf9c626e39777a8ee98eab94096f833c  model-modes.mjs
-84254f298a54a1e248791f26c22eef5cf975730401fa7ef2838f21c6ccbc0f25  model-modes.d.mts
+609bbc9cb508b4f79295e0b2f1f4707bd1facbee83835d5db7eac02fa088f43b  model-modes.mjs
+ef8a96d1e71ea3f5f3ab7a96796d042c009d90cc2896e7132b8dfc4486540699  model-modes.d.mts
