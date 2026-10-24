@@ -119,11 +119,16 @@ function supported() {
 function statusNow() {
   // Each session carries its cursor's latest move, so the live view glides it from `from` to `to`.
   const sessions = host ? host.state().map((s) => (cursors.has(s.id) ? { ...s, cursor_move: cursors.get(s.id) } : s)) : [];
+  const device = deviceOn();
   return {
-    enabled: server?.enabled === true,
+    enabled: server?.enabled === true && device,
+    // The person's own on/off for this device (Settings > Computer use; on by default).
+    device_on: device,
     // The agent's own display works without desktop access (no helper, Wayland), so only "off" is unavailable.
     supported: supported(),
-    message: server?.enabled ? (supported() ? null : "Computer use is unavailable on this desktop.") : server?.setting?.message ?? (server ? "Computer use is turned off." : null),
+    message: !device ? "Computer use is turned off on this computer." : server?.enabled ? (supported() ? null : "Computer use is unavailable on this desktop.") : server?.unavailable ?? server?.setting?.message ?? (server ? "Computer use is turned off." : null),
+    // The models that can use it (null: any).
+    models: server?.setting?.models ?? null,
     mode: server?.mode ?? "normal",
     sessions,
   };
@@ -140,6 +145,33 @@ function onCursor(move) {
   cursors.set(move.session_id, { ...move, seq: ++cursorSeq, at: Date.now() });
   pushStatus();
   preview?.cursor(move);
+}
+
+// The person's on/off for computer use on this device (policy.mjs COMPUTER_USE_SETTING, on by default), saved in
+// the profile and set only from the main window. Off: the host stops, so the engine gets no computer-use tools.
+const deviceFile = () => path.join(profileDir(), "computer-use", shared?.policyModule?.COMPUTER_USE_FILE ?? "device.json");
+let deviceSaved; // undefined: not read yet
+function deviceOn() {
+  const policy = shared?.policyModule;
+  if (!policy) return true; // shown only: apply() loads the rules before it starts anything
+  if (deviceSaved === undefined) {
+    try { const value = JSON.parse(readFileSync(deviceFile(), "utf8"))?.[policy.COMPUTER_USE_SETTING]; deviceSaved = typeof value === "boolean" ? value : null; } catch { deviceSaved = null; }
+  }
+  return policy.deviceComputerUse(deviceSaved ?? undefined);
+}
+
+async function setComputerUseOn(on) {
+  if (typeof on !== "boolean") throw new Error("Choose on or off.");
+  const { policyModule } = await sharedModules();
+  const file = deviceFile();
+  mkdirSync(path.dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, JSON.stringify({ [policyModule.COMPUTER_USE_SETTING]: on }), { mode: 0o600 });
+  renameSync(temp, file);
+  deviceSaved = on;
+  // Live: off stops the host now (the engine drops the tools); on starts it with the next state read.
+  await apply(server);
+  return statusNow();
 }
 
 // The person's one-time real-screen setting (policy.mjs REAL_SCREEN_SETTING), saved in the profile, set only
@@ -262,14 +294,16 @@ async function stopHost(by = "server") {
 }
 
 async function apply(next) {
+  await sharedModules().catch(() => null);
   server = next;
   // A periodic answer can only take the account's real screen away; a fresh read gives it (hostRefresh).
   if (next?.read === true) serverRealScreen = saysRealScreen(next);
   // A refresh that could not read the server (read false) or a no: no (fail closed).
   else if (next?.read === false || !saysRealScreen(next)) serverRealScreen = false;
   if (!serverRealScreen) await stopRealScreen();
-  if (server?.enabled && supported() && !hostPromise && Date.now() - failedAt < 60_000) { pushStatus(); return; }
-  if (server?.enabled && supported()) await startHost().catch((error) => { failedAt = Date.now(); deps?.log?.("computer use host did not start", error); });
+  const wanted = server?.enabled && supported() && deviceOn();
+  if (wanted && !hostPromise && Date.now() - failedAt < 60_000) { pushStatus(); return; }
+  if (wanted) await startHost().catch((error) => { failedAt = Date.now(); deps?.log?.("computer use host did not start", error); });
   else if (host) await stopHost("server");
   pushStatus();
 }
@@ -473,6 +507,7 @@ export {
   getComputerUseState,
   getComputerUseRealScreen,
   setComputerUseRealScreen,
+  setComputerUseOn,
   computerUseControl,
   getComputerUseMcpEnvironment,
   checkComputerUsePermissions,
