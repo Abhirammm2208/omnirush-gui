@@ -14,6 +14,7 @@ import {
 import { builtinOmniRushModelCatalog, omnirushModelWantsReasoningSummary } from "./omnirush-model-catalog.js";
 import { RejectedAttachments, isRejectedAttachmentError, type Attachment } from "./rejected-attachments.js";
 import { gatewayUrlAllowed, RELEASE_GATEWAY_ERROR } from "./release-guard.js";
+import { BOX_HEADER, MODEL_NOT_IN_MODE, notInModeMessage, projectMode } from "./model-modes/model-modes.mjs";
 
 /** A refused attachment is left out and the model request sent again, at most this often per request. */
 const MAX_ATTACHMENT_RETRIES = 2;
@@ -65,6 +66,12 @@ type BrokerOptions = {
   sessionUploadBudget?: SessionUploadBudget;
   /** Hears every sub-agent request moved to the main model (see subagentFallback). */
   onSubagentFallback?: (event: SubagentModelFallbackEvent) => void;
+  /**
+   * Whether a catalog model may run in a box (sandbox) chat or a native one
+   * (model-modes/). False: the request gets a 400 model_not_in_mode here and
+   * is never sent. Unset: every model goes to the gateway, which judges.
+   */
+  modelInMode?: (model: string, box: boolean) => boolean | Promise<boolean>;
   /** The pause before a busy picked model is tried once more; tests shrink it. */
   subagentRetryDelayMs?: number;
   /** Whether a picked sub-agent model is in its refusal cooldown (sent straight to the main model). */
@@ -201,6 +208,8 @@ const GATEWAY_ERROR_COPY: Record<string, string> = {
   transcription_unavailable: "the transcription service did not answer. Try again in a moment.",
   audio_unreadable: "the recording could not be read. Try again.",
   update_required: "this version of OmniRush.ai is no longer supported. Update the app to keep using models; your sessions are kept.",
+  // A model outside the project's mode (model-modes/): the gateway's refusal, or the broker's own before sending.
+  [MODEL_NOT_IN_MODE]: notInModeMessage().replace(/^T/, "t"),
 };
 
 /** Readable copy for a gateway error code, or null for a code it does not know. */
@@ -340,7 +349,7 @@ function carriedFields(payload: Record<string, unknown>, nested: Record<string, 
  * check. Inside a stream (after any output) the engine takes an error frame
  * for a passing fault and sends the request again, up to five times.
  */
-const FINAL_STREAM_CODES = new Set(["request_policy_refused", "session_quality_cap", "daily_grant_exhausted", "cyber_policy"]);
+const FINAL_STREAM_CODES = new Set(["request_policy_refused", "session_quality_cap", "daily_grant_exhausted", "cyber_policy", MODEL_NOT_IN_MODE]);
 
 /**
  * A final refusal inside a stream as the frame the engine shows once and
@@ -405,7 +414,8 @@ function errorEvent(block: Uint8Array, payload: Record<string, unknown>): Uint8A
   const omnirush = omnirushField(nested);
   if (baseCode && TURN_ENDING_STREAM_CODES.has(baseCode)) return turnEndingEvent(baseCode, payload.sequence_number, omnirush);
   const original = stringField(nested ? nested.message : payload.message);
-  const readable = code ? gatewayErrorMessage(code, original) : null;
+  // model_not_in_mode names the kind of project the model runs in: the gateway's words.
+  const readable = baseCode === MODEL_NOT_IN_MODE && original ? original : code ? gatewayErrorMessage(code, original) : null;
   const detail = stringField(payload.detail);
   if (retryRefused(nested) || (detail && FINAL_STREAM_CODES.has(detail)) || (baseCode && FINAL_STREAM_CODES.has(baseCode))) {
     const named = detail ?? baseCode ?? "omnirush_refused";
@@ -666,8 +676,8 @@ function readableErrorBody(text: string, grant: string | null): { error: Record<
   const code = bareCode ?? stringField(nested?.code);
   if (!code) return null;
   const message = (grant && code === "daily_grant_exhausted" ? `omnirush.ai: ${grant.charAt(0).toLowerCase()}${grant.slice(1)}` : null)
-    // The server names the version to install; keep its words.
-    ?? (code === UPDATE_REQUIRED_CODE ? stringField(nested?.message) ?? stringField(payload.message) : null)
+    // The server names the version to install, or the kind of project the model runs in; keep its words.
+    ?? (code === UPDATE_REQUIRED_CODE || code === MODEL_NOT_IN_MODE ? stringField(nested?.message) ?? stringField(payload.message) : null)
     ?? gatewayErrorMessage(code, stringField(nested?.message))
     ?? (bareCode ? `omnirush.ai could not complete the model request (${code}).` : null);
   if (!message) return null;
@@ -1158,6 +1168,8 @@ async function refusalCode(response: Response): Promise<{ code: string | null; f
 async function subagentRefusal(response: Response): Promise<SubagentRefusal> {
   const { code, final } = await refusalCode(response);
   const reason = code ?? `http_${response.status}`;
+  // Final for this model only: outside the chat's mode, the main model may still run here.
+  if (code === MODEL_NOT_IN_MODE) return { move: "now", reason };
   // Marked final by the gateway: not sent again, on this model or another.
   if (final || (code && ACCOUNT_REFUSED.has(code))) return { move: "never", reason };
   if (code && SUBAGENT_MODEL_REFUSED.has(code)) return { move: "now", reason };
@@ -1233,6 +1245,13 @@ export class OmniRushGatewayBroker {
   private readonly onSubagentFallback?: BrokerOptions["onSubagentFallback"];
   private readonly subagentRetryDelayMs: number;
   private readonly subagentModelRefused?: (model: string) => boolean;
+  private readonly modelInMode?: BrokerOptions["modelInMode"];
+  /**
+   * Chats seen with X-OmniRush-Box (the box engine plugin marks a box chat's
+   * requests): a later request of one without the mark (a compaction, a side
+   * question) still goes out as a box request. Oldest first, bounded.
+   */
+  private readonly boxSessions = new Set<string>();
   private readonly onUpdateSignal?: (signal: GatewayUpdateSignal) => void;
   private readonly reasoningSummaryFor: (model: string) => boolean | Promise<boolean>;
   private readonly clientHeader: string | null;
@@ -1273,6 +1292,7 @@ export class OmniRushGatewayBroker {
     this.onSubagentFallback = options.onSubagentFallback;
     this.subagentRetryDelayMs = options.subagentRetryDelayMs ?? SUBAGENT_RETRY_DELAY_MS;
     this.subagentModelRefused = options.subagentModelRefused;
+    this.modelInMode = options.modelInMode;
     this.onUpdateSignal = options.onUpdateSignal;
     this.reasoningSummaryFor = options.reasoningSummaryFor ?? defaultReasoningSummaryFor;
   }
@@ -1905,6 +1925,15 @@ export class OmniRushGatewayBroker {
     accessToken: string | undefined,
     requestId: string,
   ): Promise<Response> {
+    // A model the chat's mode does not allow: refused here as the gateway would, never sent.
+    if (this.modelInMode && body !== undefined && (path === "responses" || path === "responses/compact")) {
+      const model = requestedModel(body);
+      if (model && !(await this.modelInMode(model, this.boxRequest(request)))) {
+        this.log?.("info", "omnirush.ai model not available in this chat's mode; not sent", { model, box: this.boxRequest(request), clientRequestId: requestId });
+        const message = notInModeMessage(projectMode(this.boxRequest(request)));
+        return Response.json({ detail: MODEL_NOT_IN_MODE, error: { type: "invalid_request_error", code: MODEL_NOT_IN_MODE, message } }, { status: 400, headers: { "x-should-retry": "false" } });
+      }
+    }
     const forwardedBody = path === "responses" && body !== undefined
       ? await withReasoningSummary(body, this.reasoningSummaryFor)
       : body;
@@ -1951,12 +1980,28 @@ export class OmniRushGatewayBroker {
       const value = request.headers.get(name);
       if (value) headers.set(name, value);
     }
+    // A box (sandbox) chat's request: the gateway judges its model in the box mode.
+    if (this.boxRequest(request)) headers.set(BOX_HEADER, "1");
     return this.fetcher(upstreamUrl(this.state.gatewayUrl, path), {
       method: request.method,
       headers,
       ...(body ? { body } : {}),
       signal: request.signal,
     });
+  }
+
+  /** Whether a request comes from a box chat: marked so, or from a chat (or its main chat) marked earlier. */
+  private boxRequest(request: Request): boolean {
+    const sessions = [request.headers.get("x-omnirush-session-id"), request.headers.get(PARENT_SESSION_HEADER)].filter((id): id is string => Boolean(id));
+    if (request.headers.get(BOX_HEADER) === "1") {
+      for (const id of sessions) {
+        this.boxSessions.delete(id);
+        this.boxSessions.add(id);
+      }
+      while (this.boxSessions.size > 1024) this.boxSessions.delete(this.boxSessions.values().next().value!);
+      return true;
+    }
+    return sessions.some((id) => this.boxSessions.has(id));
   }
 
   private refresh(expectedAccessToken: string): Promise<boolean> {

@@ -209,6 +209,7 @@ import { omnirushMcpPolicyPluginPath } from "./omnirush-extensions-plugin-path.j
 import { isOmniRushUiMcpRegistryEntry } from "./omnirush-ui-mcp-command.js";
 import { describeIgnored, type McpAllowEntry } from "./mcp-allow/mcp-allow.mjs";
 import { omnirushModelWantsReasoningSummary, readOmniRushModelCatalog } from "./omnirush-model-catalog.js";
+import { modelAllowedIn, modelModes, projectMode } from "./model-modes/model-modes.mjs";
 import {
   SUBAGENT_MODEL_FALLBACK_TRACE,
   readSubagentModelSetting,
@@ -1274,6 +1275,12 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     // Reasoning summaries for every reasoning model the account's catalog
     // lists on the Codex route (not a hardcoded pair of ids).
     reasoningSummaryFor: async (model) => omnirushModelWantsReasoningSummary(await readOmniRushModelCatalog(config), model),
+    // A catalog model outside the chat's mode (box or native, model-modes/) is refused before it is sent;
+    // a model the catalog does not list goes to the gateway, which judges.
+    modelInMode: async (model, box) => {
+      const entry = (await readOmniRushModelCatalog(config)).find((candidate) => candidate.id === model);
+      return !entry || modelAllowedIn(entry, projectMode(box));
+    },
     // The desktop's update gate (banner, blocked view); session uploads and
     // project archives go on whatever it says.
     ...(config.omnirushGatewayCredentials?.onUpdateSignal ? { onUpdateSignal: config.omnirushGatewayCredentials.onUpdateSignal } : {}),
@@ -4548,6 +4555,8 @@ function createRoutes(
         family: model.family,
         default: model.default,
         efforts: model.reasoning_levels,
+        // Where the model may run: "native" (projects without the sandbox), "box" (sandbox projects).
+        modes: modelModes(model),
       })),
     });
   });
