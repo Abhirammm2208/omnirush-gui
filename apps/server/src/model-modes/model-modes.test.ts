@@ -102,6 +102,19 @@ describe("model modes", () => {
     expect(((await response.json()) as { error: { message: string } }).error.message).toBe("This model isn't available in sandbox projects.");
   });
 
+  test("broker: one model per chat; titles (no tools), sub-agents and other chats pass", async () => {
+    const calls: Call[] = [];
+    const b = broker(calls, undefined, false);
+    const tools = [{ type: "function", name: "bash" }];
+    expect((await b.handle(request({ model: "kimi-k3.1-pro", tools }, { "x-omnirush-session-id": "ses_one" }), "responses")).status).toBe(200);
+    const refused = await b.handle(request({ model: "gpt-6-astra", tools }, { "x-omnirush-session-id": "ses_one" }), "responses");
+    expect(refused.status).toBe(400);
+    expect(((await refused.json()) as { error: { code: string; message: string } }).error).toMatchObject({ code: "session_model_fixed", message: "This chat runs on kimi-k3.1-pro. Start a new chat to use gpt-6-astra." });
+    expect((await b.handle(request({ model: "gpt-6-astra" }, { "x-omnirush-session-id": "ses_one" }), "responses")).status).toBe(200);
+    expect((await b.handle(request({ model: "gpt-6-astra", tools }, { "x-omnirush-session-id": "ses_two" }), "responses")).status).toBe(200);
+    expect(calls.map((c) => c.model)).toEqual(["kimi-k3.1-pro", "gpt-6-astra", "gpt-6-astra"]);
+  });
+
   test("broker: a sub-agent's picked model refused for the mode runs on the main model", async () => {
     const calls: Call[] = [];
     const response = await broker(calls, (call) => call.model === "kimi-k3.1-pro" ? Response.json(REFUSAL, { status: 400, headers: { "x-should-retry": "false" } }) : Response.json({ output: [] }), false)

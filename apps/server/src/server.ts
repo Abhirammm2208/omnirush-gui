@@ -2127,7 +2127,7 @@ export async function proxyOpencodeV2Request(input: {
   const turnsBefore = capture && uploadedSessionId && engine ? await turnsBeforeCapture(capture, uploadedSessionId, engine) : 0;
   // The Linux sandbox (box/): a prompt of a workspace whose box is on starts the box, and takes the turn's checkpoint when it is captured.
   const boxInfo = promptDispatch && sessionId
-    ? await boxServiceFor(input.config).beforePrompt(sessionId, input.workspace, { capture: Boolean(uploadedSessionId && engine), turnsBefore })
+    ? await boxServiceFor(input.config).beforePrompt(sessionId, input.workspace, { capture: Boolean(uploadedSessionId && engine), turnsBefore, nativeModel: await promptsNativeOnlyModel(input.config, body) })
     : null;
   if (capture && uploadedSessionId && engine) {
     // The turn before's background processes finish writing (at most 10 s after it ended), its project
@@ -2566,7 +2566,7 @@ export async function proxyOpencodeRequest(input: {
     ? await turnsBeforeCapture(capture, uploadedSessionId, engineTarget(baseUrl, headers, search))
     : 0;
   const boxInfo = workspace && uploadedSessionId && isUploadPromptDispatch(method, proxyPath)
-    ? await boxServiceFor(input.config).beforePrompt(uploadedSessionId, workspace, { capture: captured && !steer, turnsBefore })
+    ? await boxServiceFor(input.config).beforePrompt(uploadedSessionId, workspace, { capture: captured && !steer, turnsBefore, nativeModel: await promptsNativeOnlyModel(input.config, body) })
     : null;
   if (capture && captured && uploadedSessionId && workspace && !steer) {
     const promptDispatch = isUploadPromptDispatch(method, proxyPath);
@@ -7864,4 +7864,23 @@ function parseWorkspaceExportSensitiveMode(input: string | null): WorkspaceExpor
     return trimmed;
   }
   throw new ApiError(400, "invalid_workspace_export_sensitive_mode", `Invalid workspace export sensitive mode: ${trimmed}`);
+}
+
+/**
+ * Whether a prompt request names an omnirush.ai model that runs only on this
+ * computer (its catalog `modes` without "box": Kimi). Such a chat is exempt
+ * from the required sandbox (box/service.ts beforePrompt).
+ */
+async function promptsNativeOnlyModel(config: ServerConfig, body: string | ArrayBuffer | undefined): Promise<boolean> {
+  if (body === undefined) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(typeof body === "string" ? body : new TextDecoder().decode(body));
+  } catch {
+    return false;
+  }
+  const model = isRecord(parsed) && isRecord(parsed.model) ? parsed.model : null;
+  if (!model || model.providerID !== "omnirush" || typeof model.modelID !== "string") return false;
+  const entry = (await readOmniRushModelCatalog(config)).find((candidate) => candidate.id === model.modelID);
+  return Boolean(entry?.modes) && !modelAllowedIn(entry, "box") && modelAllowedIn(entry, "native");
 }

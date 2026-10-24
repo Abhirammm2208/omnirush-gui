@@ -16,6 +16,8 @@ import { RejectedAttachments, isRejectedAttachmentError, type Attachment } from 
 import { gatewayUrlAllowed, RELEASE_GATEWAY_ERROR } from "./release-guard.js";
 import { BOX_HEADER, MODEL_NOT_IN_MODE, notInModeMessage, projectMode } from "./model-modes/model-modes.mjs";
 
+/** A main chat's request on another model than the one it started on (one model per chat). */
+const SESSION_MODEL_FIXED = "session_model_fixed";
 /** A refused attachment is left out and the model request sent again, at most this often per request. */
 const MAX_ATTACHMENT_RETRIES = 2;
 const MAX_ATTACHMENT_ERROR_BYTES = 256 * 1024;
@@ -210,6 +212,7 @@ const GATEWAY_ERROR_COPY: Record<string, string> = {
   update_required: "this version of OmniRush.ai is no longer supported. Update the app to keep using models; your sessions are kept.",
   // A model outside the project's mode (model-modes/): the gateway's refusal, or the broker's own before sending.
   [MODEL_NOT_IN_MODE]: notInModeMessage().replace(/^T/, "t"),
+  [SESSION_MODEL_FIXED]: "this chat keeps the model it started on. Start a new chat to use another model.",
 };
 
 /** Readable copy for a gateway error code, or null for a code it does not know. */
@@ -677,7 +680,7 @@ function readableErrorBody(text: string, grant: string | null): { error: Record<
   if (!code) return null;
   const message = (grant && code === "daily_grant_exhausted" ? `omnirush.ai: ${grant.charAt(0).toLowerCase()}${grant.slice(1)}` : null)
     // The server names the version to install, or the kind of project the model runs in; keep its words.
-    ?? (code === UPDATE_REQUIRED_CODE || code === MODEL_NOT_IN_MODE ? stringField(nested?.message) ?? stringField(payload.message) : null)
+    ?? (code === UPDATE_REQUIRED_CODE || code === MODEL_NOT_IN_MODE || code === SESSION_MODEL_FIXED ? stringField(nested?.message) ?? stringField(payload.message) : null)
     ?? gatewayErrorMessage(code, stringField(nested?.message))
     ?? (bareCode ? `omnirush.ai could not complete the model request (${code}).` : null);
   if (!message) return null;
@@ -1252,6 +1255,8 @@ export class OmniRushGatewayBroker {
    * question) still goes out as a box request. Oldest first, bounded.
    */
   private readonly boxSessions = new Set<string>();
+  /** Each chat's model, from its first agent request (one model per chat; oldest first, bounded). */
+  private readonly sessionModels = new Map<string, string>();
   private readonly onUpdateSignal?: (signal: GatewayUpdateSignal) => void;
   private readonly reasoningSummaryFor: (model: string) => boolean | Promise<boolean>;
   private readonly clientHeader: string | null;
@@ -1934,6 +1939,9 @@ export class OmniRushGatewayBroker {
         return Response.json({ detail: MODEL_NOT_IN_MODE, error: { type: "invalid_request_error", code: MODEL_NOT_IN_MODE, message } }, { status: 400, headers: { "x-should-retry": "false" } });
       }
     }
+    // One model per chat: a main chat's agent request on another model than its first is refused here.
+    const fixed = this.fixedModelRefusal(request, path, body);
+    if (fixed) return fixed;
     const forwardedBody = path === "responses" && body !== undefined
       ? await withReasoningSummary(body, this.reasoningSummaryFor)
       : body;
@@ -1988,6 +1996,35 @@ export class OmniRushGatewayBroker {
       ...(body ? { body } : {}),
       signal: request.signal,
     });
+  }
+
+  /**
+   * A main chat's agent request (it offers tools; titles and summaries do not)
+   * whose model is not the one the chat started on: a 400
+   * `session_model_fixed`, never sent. Sub-agent chats (they name their main
+   * chat) are left to the swarm's own rules.
+   */
+  private fixedModelRefusal(request: Request, path: string, body: ArrayBuffer | string | undefined): Response | null {
+    if (body === undefined || path !== "responses" || request.headers.get(PARENT_SESSION_HEADER)) return null;
+    const session = request.headers.get("x-omnirush-session-id");
+    if (!session) return null;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(typeof body === "string" ? body : new TextDecoder().decode(body));
+    } catch {
+      return null;
+    }
+    if (!isRecord(parsed) || typeof parsed.model !== "string" || !Array.isArray(parsed.tools) || parsed.tools.length === 0) return null;
+    const model = parsed.model.replace(/^omnirush\//, "");
+    const first = this.sessionModels.get(session);
+    if (!first) {
+      this.sessionModels.set(session, model);
+      while (this.sessionModels.size > 2048) this.sessionModels.delete(this.sessionModels.keys().next().value!);
+      return null;
+    }
+    if (first === model) return null;
+    this.log?.("info", "omnirush.ai chat model change refused (one model per chat)", { first, model });
+    return Response.json({ detail: SESSION_MODEL_FIXED, error: { type: "invalid_request_error", code: SESSION_MODEL_FIXED, message: `This chat runs on ${first}. Start a new chat to use ${model}.` } }, { status: 400, headers: { "x-should-retry": "false" } });
   }
 
   /** Whether a request comes from a box chat: marked so, or from a chat (or its main chat) marked earlier. */

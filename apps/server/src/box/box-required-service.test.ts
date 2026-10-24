@@ -150,6 +150,24 @@ describe("required sandbox: the desktop's projects", () => {
     expect(JSON.parse(await readFile(join(home, DESKTOP_PROJECTS_FILE), "utf8")).native_chats).toEqual(["ses_req_old1"]);
   });
 
+  test("a new chat on a model that runs only on this computer stays here, exempt from the required box (native_model)", async () => {
+    const stateDir = await temp("state");
+    const home = await temp("boxhome");
+    const root = await temp("project");
+    const workspace: BoxWorkspace = { id: "ws_nm", path: root, workspaceType: "local" };
+    rememberServerDefault(stateDir, { local_box: { default: "on", required: true } });
+    const boxes = service({ stateDir, workspaces: [workspace], env: { OMNIRUSH_BOX_HOME: home } });
+    const frozen: string[] = [];
+    boxes.ensure = async () => fakeRun(root, frozen);
+    expect(await boxes.beforePrompt("ses_kimi_new", workspace, { nativeModel: true })).toBeNull();
+    // A chat that already ran in the box keeps it (its model never changed).
+    await boxes.beforePrompt("ses_box_first", workspace);
+    await boxes.beforePrompt("ses_box_first", workspace, { nativeModel: true });
+    expect(frozen).toEqual(["ses_box_first turn-1", "ses_box_first turn-2"]);
+    expect(await boxes.planOutcome("ses_kimi_new", workspace)).toEqual({ native: true, source: "model", reason: "native_model", required: true, fallback: "native" });
+    expect(JSON.parse(await readFile(join(home, DESKTOP_PROJECTS_FILE), "utf8")).native_chats).toEqual(["ses_kimi_new"]);
+  });
+
   test("the first prompt waits while the image downloads, then runs in the box", async () => {
     const stateDir = await temp("state");
     const root = await temp("project");

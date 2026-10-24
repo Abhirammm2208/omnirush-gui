@@ -217,6 +217,8 @@ export class BoxService {
   private readonly chatTurns = new Map<string, number>();
   /** Chats (and their project's key) that ran on this machine before the server's default turned the box on: they stay here. */
   private readonly nativeChats = new Map<string, string>();
+  /** Of nativeChats, the ones on a model that runs only on this computer (launch reason native_model). */
+  private readonly nativeModelChats = new Set<string>();
   /** Chats sent to their project's box in this run (a failed checkpoint included). */
   private readonly boxedChats = new Set<string>();
   /** Chats whose box.plan event went out in this run. */
@@ -779,8 +781,16 @@ export class BoxService {
    * label returned for its uploads. Null when the chat runs natively. Never
    * throws; waits at most FREEZE_WAIT_MS.
    */
-  async beforePrompt(sessionId: string, workspace: BoxWorkspace, { capture = true, turnsBefore = 0 }: { capture?: boolean; turnsBefore?: number } = {}): Promise<BoxCaptureInfo | null> {
+  async beforePrompt(sessionId: string, workspace: BoxWorkspace, { capture = true, turnsBefore = 0, nativeModel = false }: { capture?: boolean; turnsBefore?: number; nativeModel?: boolean } = {}): Promise<BoxCaptureInfo | null> {
     if (!/^[A-Za-z0-9._:-]{8,128}$/.test(sessionId)) return null;
+    // A chat on a model that runs only on this computer (model-modes/: Kimi) runs here, exempt from
+    // the required sandbox, unless it already ran in the box (a chat's model never changes).
+    if (nativeModel && !this.nativeChats.has(sessionId) && !this.boxedChats.has(sessionId) && !this.turns.has(sessionId) && savedTurns(this.snapshotDir(sessionId)) === 0) {
+      this.nativeChats.set(sessionId, boxKey(boxRoot(workspace)));
+      this.nativeModelChats.add(sessionId);
+      await this.writeProjects();
+      this.log("info", "box: a chat on a model that runs only on this computer stays here", { sessionId });
+    }
     // The chat's own turn number, counted with the box on or off: a chat that ran natively
     // (reopened, or its box turned on mid-chat) has its first checkpoint (turn-1) before a later
     // turn; the checkpoint names it as session_turn (CLI: the same).
@@ -874,7 +884,7 @@ export class BoxService {
     // on this machine, the fallback in force: `native` where it can't (counted in full), the server's
     // required_fallback where the box was turned off (OMNIRUSH_BOX=0) or the setup declined.
     const native = (reason: string, extra: Partial<BoxPlanOutcome> = {}): BoxPlanOutcome => ({ native: true, source: mode.source, reason, ...(mode.required ? requiredLaunch(reason, { native: true, serverFallback: fallback }) : {}), ...extra });
-    if (this.nativeChats.has(sessionId)) return native("kept_old_chat", { source: "chat" });
+    if (this.nativeChats.has(sessionId)) return this.nativeModelChats.has(sessionId) ? native("native_model", { source: "model" }) : native("kept_old_chat", { source: "chat" });
     if (this.boxedChats.has(sessionId)) return { native: false, source: mode.source, reason: "box", ...(mode.required ? requiredLaunch("box", { native: false }) : {}) };
     if (!mode.on) {
       if (mode.required && mode.source === "env") return native("env_off");

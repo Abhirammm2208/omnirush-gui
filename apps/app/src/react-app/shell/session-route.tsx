@@ -141,7 +141,7 @@ import { computeModelAvailability, createUnavailableConfirmationGate, sessionMod
 import { useSessionFindStore } from "@/react-app/domains/session/surface/find-store";
 import { useModelPicker } from "@/react-app/domains/session/modals/use-model-picker";
 import { getSessionModelSelection, resolveSendVariant, useSessionModelStore } from "@/react-app/domains/session/surface/session-model-store";
-import { useProjectModelModes } from "@/react-app/domains/session/surface/model-modes";
+import { chatStarted, markChatStarted, useProjectModelModes } from "@/react-app/domains/session/surface/model-modes";
 import { useWorkbenchStore } from "@/react-app/domains/session/chat/workbench-store";
 import { resolveWorkbenchPaneEndpoint } from "@/react-app/domains/session/chat/pane-runtime";
 import {
@@ -1004,13 +1004,19 @@ export function SessionRoute() {
   // The default as this project may use it: one its mode does not allow moves to the allowed default.
   const projectDefaultModel = modelModes.fallback(local.prefs.defaultModel ?? null) ?? local.prefs.defaultModel ?? null;
   /**
-   * The model a send in the open project goes out on: one its mode does not
-   * allow moves to the allowed default before anything is sent, with a note,
-   * and the chat remembers it.
+   * The model a send in the open project goes out on. A chat's model is fixed
+   * once it sent a prompt: if its project's mode no longer allows it (the
+   * sandbox turned on or off since), nothing is sent and the person is told to
+   * start a new chat. Only a new chat moves to the allowed default, with a note.
    */
   const modeSendModel = (model: ModelRef | null | undefined, sessionId: string | null): ModelRef | null => {
     const rules = modelModesRef.current;
-    if (!model || rules.allows(model)) return model ?? null;
+    if (!model) return null;
+    if (sessionId && chatStarted(sessionId)) {
+      if (!rules.allows(model)) throw new Error(rules.chatNote(model));
+      return model;
+    }
+    if (rules.allowsNew(model)) return model;
     const next = rules.fallback(model);
     if (!next) return model;
     toast(rules.note(model, next), { id: `model-mode:${sessionId ?? "new"}` });
@@ -1120,11 +1126,6 @@ export function SessionRoute() {
     (selectedSessionId ? state.bySessionId[selectedSessionId] ?? null : null),
   );
   const activeComposerModel = selectedSessionModelSelection?.model ?? projectDefaultModel;
-  // A chat whose model its project's mode does not allow (the sandbox turned on or off since): moved before any send.
-  useEffect(() => {
-    const model = selectedSessionModelSelection?.model;
-    if (selectedSessionId && model && !modelModes.allows(model)) modeSendModel(model, selectedSessionId);
-  }, [modelModes, selectedSessionId, selectedSessionModelSelection?.model]);
   const activeComposerAvailability = resolveModelAvailability(activeComposerModel);
   const activeComposerTargetsSession = Boolean(selectedSessionModelSelection && selectedSessionId);
   const selectedModelUnavailableKey = activeComposerAvailability.status === "unavailable" && activeComposerModel
@@ -1570,6 +1571,8 @@ export function SessionRoute() {
                 if (sendModel && getQueuedSendGeneration(targetSessionId) === generation) {
                   useSessionModelStore.getState().setModel(targetSessionId, sendModel, sendVariant ?? null);
                 }
+                // Its first prompt went out: the chat keeps this model from now on.
+                markChatStarted(targetSessionId);
               },
               unrevert: async () => {
                 try {
@@ -1908,6 +1911,8 @@ export function SessionRoute() {
                 if (sendModel && getQueuedSendGeneration(targetSessionId) === generation) {
                   useSessionModelStore.getState().setModel(targetSessionId, sendModel, sendVariant ?? null);
                 }
+                // Its first prompt went out: the chat keeps this model from now on.
+                markChatStarted(targetSessionId);
               },
               unrevert: async () => {
                 try {
@@ -2839,6 +2844,12 @@ export function SessionRoute() {
     behavior?: { value: string | null },
   ) => {
     const explicitBehavior = behavior !== undefined;
+    // One model per chat: a chat that sent a prompt keeps its model.
+    const fixed = targetSessionId && chatStarted(targetSessionId) ? getSessionModelSelection(targetSessionId)?.model : null;
+    if (fixed && (fixed.providerID !== next.providerID || fixed.modelID !== next.modelID)) {
+      toast(modelModesRef.current.fixedNote(fixed, next), { id: `model-fixed:${targetSessionId}` });
+      return;
+    }
     useModelCollectionsStore.getState().recordRecent(next);
     if (targetSessionId) {
       const sessionStore = useSessionModelStore.getState();
@@ -4120,7 +4131,7 @@ export function SessionRoute() {
       onOpenAutomations={() => navigate(automationsRoute())}
       onOpenDashboard={() => navigate(dashboardRoute())}
       onCreateWorkspace={handleOpenCreateWorkspace}
-      modelOptions={modelPicker.options.filter((option) => modelModes.allows(option))}
+      modelOptions={modelPicker.options.filter((option) => modelModes.allowsNew(option))}
       selectedModel={paletteSelectedModel}
       selectedModelBehavior={paletteSelectedModelBehavior}
       onSelectModel={(next, behavior) => {
@@ -4161,7 +4172,7 @@ export function SessionRoute() {
     />
     <ModelPickerModal
       open={modelPicker.open}
-      options={modelPicker.options.filter((option) => modelModes.allows(option))}
+      options={modelPicker.options.filter((option) => modelModes.allowsNew(option))}
       organizationModelsEmpty={organizationModelsEmpty}
       organizationModelsSettingsUrl={organizationModelsSettingsUrl}
 
