@@ -1,4 +1,5 @@
 import * as React from "react"
+import { createPortal } from "react-dom"
 import { TextQuote } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -42,7 +43,8 @@ export function SelectionQuote({ sessionId, containerRef }: { sessionId: string;
   }, [containerRef])
 
   if (!anchor) return null
-  return (
+  // In <body>: a transformed ancestor would make `fixed` relative to it.
+  return createPortal(
     <Button
       size="sm"
       variant="secondary"
@@ -59,6 +61,7 @@ export function SelectionQuote({ sessionId, containerRef }: { sessionId: string;
     >
       <TextQuote className="size-3.5" />
       Quote
-    </Button>
+    </Button>,
+    document.body,
   )
 }
