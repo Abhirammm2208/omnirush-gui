@@ -437,7 +437,7 @@ export function NewTaskComposer(props: NewTaskComposerProps) {
       runModeControl={<WorkspaceRunModeMenu client={workspaceClient} workspaceId={workspaceId} busy={props.busy} />}
       fullPermissionsControl={<FullPermissionsToggle client={workspaceClient} workspaceId={workspaceId} />}
       sandboxControl={<SandboxStatusChip client={workspaceClient} workspaceId={workspaceId} onOpenSettings={() => context?.onOpenSettingsSection?.("sandbox")} />}
-      subagentModelControl={<SubagentModelMenu client={workspaceClient} />}
+      subagentModelControl={<SubagentModelMenu client={workspaceClient} chatModel={context?.selectedModel?.providerID === "omnirush" ? context.selectedModel.modelID : null} />}
           voiceClient={workspaceClient}
           voiceWorkspaceId={workspaceId}
       draft={props.draft}

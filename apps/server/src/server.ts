@@ -217,6 +217,7 @@ import {
   sanitizeSubagentModelSetting,
   subagentModelRefusals,
   subagentSettingFor,
+  pinnedSubagentSetting,
   writeSubagentModelSetting,
   type EngineModelRef,
   type SubagentModelSetting,
@@ -4602,8 +4603,9 @@ function createRoutes(
     const body = await readJsonBody(ctx.request);
     const inherited = engineModelRef(body.inherited);
     if (!inherited) throw new ApiError(400, "invalid_payload", "inherited model is required");
-    const setting = subagentSettingFor(await readSubagentModelSetting(config), engineModelRef(body.requested));
-    if (!setting || (!setting.model && !setting.effort)) return jsonResponse({});
+    // Sub-agents run on their chat's model (one model per chat): only the effort applies.
+    const setting = pinnedSubagentSetting(subagentSettingFor(await readSubagentModelSetting(config), engineModelRef(body.requested)));
+    if (!setting) return jsonResponse({});
     const refusals = subagentModelRefusals(config);
     const resolution = resolveSubagentModel({
       setting,

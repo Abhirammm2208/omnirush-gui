@@ -3680,7 +3680,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
           runModeControl={<WorkspaceRunModeMenu client={props.client} workspaceId={props.workspaceId} busy={chatStreaming || preparingCloudTools || Boolean(props.activePermission || props.activeQuestion)} />}
           fullPermissionsControl={<FullPermissionsToggle client={props.client} workspaceId={props.workspaceId} />}
           sandboxControl={<SandboxStatusChip client={props.client} workspaceId={props.workspaceId} onOpenSettings={() => props.onOpenSettingsSection?.("sandbox")} />}
-          subagentModelControl={<SubagentModelMenu client={props.client} />}
+          subagentModelControl={<SubagentModelMenu client={props.client} chatModel={props.selectedModel?.providerID === "omnirush" ? props.selectedModel.modelID : null} />}
           voiceClient={props.client}
           voiceWorkspaceId={props.workspaceId}
           draft={autoSendPayload ? draft : autoSending ? "" : draft}
