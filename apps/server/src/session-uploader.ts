@@ -2,7 +2,7 @@ import { permissionSetupSettings, type ApprovalMode } from "./approval-mode.js";
 import { gitChildEnv } from "./git-env.js";
 import { createHash, randomBytes } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { createReadStream, createWriteStream, watch, type FSWatcher, type WriteStream } from "node:fs";
+import { createReadStream, createWriteStream, mkdirSync, readFileSync, renameSync, watch, writeFileSync, type FSWatcher, type WriteStream } from "node:fs";
 import { appendFile, lstat, mkdir, open, readFile, readdir, readlink, rename, rm, stat } from "node:fs/promises";
 import { homedir, release as osRelease, tmpdir } from "node:os";
 import nodePath, { basename, dirname, extname, join, relative, resolve, sep, type PlatformPath } from "node:path";
@@ -160,6 +160,8 @@ const MAX_SPOOL_TRACE_ENTRIES = 2_000;
  * A spooled upload that keeps failing with a retryable answer, or that waits
  * for its account to sign in again, is kept this long, then dropped.
  */
+/** Chats whose strict-session bind was refused (state dir): their uploads stay held across restarts. */
+const UPLOAD_BIND_HOLDS_FILE = "omnirush-upload-bind-holds.json";
 export const MAX_SPOOL_AGE_MS = 14 * 24 * 60 * 60_000;
 /** Stamped at a sign-out on spooled uploads whose account was never learned: no account has it, so none sends them. */
 export const SIGNED_OUT_UNKNOWN_ACCOUNT = "signed-out:unknown";
@@ -4706,6 +4708,9 @@ export class SessionUploader {
   private readonly settleCapturePolicy?: SessionUploaderOptions["settleCapturePolicy"];
   /** Chats whose binding the broker has not confirmed yet (strict sessions under enforce): nothing of theirs is sent. */
   private readonly heldUntilBound = new Set<string>();
+  /** The held chats kept on disk (a refused bind), until a later bind is confirmed. */
+  private readonly heldOnDisk = new Set<string>();
+  private readonly holdsPath: string | null;
   private readonly repairTranscript?: SessionUploaderOptions["repairTranscript"];
   private readonly confirmEnabled: boolean;
   private readonly idleEndMs: number;
@@ -4819,6 +4824,7 @@ export class SessionUploader {
     });
     this.ledgerPath = stateDir ? join(stateDir, UPLOAD_SESSION_LEDGER_FILE) : null;
     this.spoolDir = stateDir ? join(stateDir, UPLOAD_SPOOL_DIRECTORY) : null;
+    this.holdsPath = stateDir ? join(stateDir, UPLOAD_BIND_HOLDS_FILE) : null;
     this.journalDir = stateDir ? join(stateDir, UPLOAD_JOURNAL_DIRECTORY) : null;
     // State left under the pre-2.2.2 names is moved before anything reads it.
     this.stateMigrated = stateDir
@@ -4894,6 +4900,8 @@ export class SessionUploader {
     // Uploads spooled by a previous process are retried once this one is up.
     // Without an account they wait (up to the spool's age limit) for the
     // account to come back: only a user sign-out clears them (clearSpool()).
+    // Chats a previous process could not bind stay held: read before the first drain is scheduled.
+    this.loadHolds();
     if (this.spoolDir && this.enabled) this.scheduleRetry(this.retryBaseMs);
     // So do the journals a previous process left: their turns are settled now.
     this.journalsRead = this.enabled ? this.recoverJournals() : Promise.resolve();
@@ -5951,15 +5959,49 @@ export class SessionUploader {
   }
 
   /**
-   * Strict sessions under enforce: a chat's uploads wait (spooled, never dropped) until the broker confirms
-   * its binding, so no history reaches the server before the bind. Releasing drains the spool.
+   * Strict sessions under enforce: a chat's uploads wait (spooled) until the broker confirms its binding, so no
+   * history reaches the server before the bind. "pending" holds for this bind; "refused" also keeps the hold on
+   * disk, so a restart holds the chat until a later bind; "confirmed" releases it (on disk too) and drains the spool.
    */
-  holdUploads(sessionId: string, held: boolean): void {
-    if (held) {
+  holdUploads(sessionId: string, state: "pending" | "refused" | "confirmed"): void {
+    if (state !== "confirmed") {
       this.heldUntilBound.add(sessionId);
       while (this.heldUntilBound.size > 4000) this.heldUntilBound.delete(this.heldUntilBound.values().next().value!);
-    } else if (this.heldUntilBound.delete(sessionId)) {
-      void this.drainSpool().catch(() => undefined);
+      if (state === "refused" && !this.heldOnDisk.has(sessionId)) {
+        this.heldOnDisk.add(sessionId);
+        this.saveHolds();
+      }
+      return;
+    }
+    const wasHeld = this.heldUntilBound.delete(sessionId);
+    if (this.heldOnDisk.delete(sessionId)) this.saveHolds();
+    if (wasHeld) void this.drainSpool().catch(() => undefined);
+  }
+
+  /** Chats refused a binding by an earlier process: read before any spool drain, so their uploads stay held. */
+  private loadHolds(): void {
+    if (!this.holdsPath) return;
+    try {
+      const saved: unknown = JSON.parse(readFileSync(this.holdsPath, "utf8"));
+      if (!Array.isArray(saved)) return;
+      for (const id of saved.slice(-4000)) {
+        if (typeof id !== "string" || !id) continue;
+        this.heldOnDisk.add(id);
+        this.heldUntilBound.add(id);
+      }
+    } catch { /* none kept */ }
+  }
+
+  private saveHolds(): void {
+    if (!this.holdsPath) return;
+    try {
+      while (this.heldOnDisk.size > 4000) this.heldOnDisk.delete(this.heldOnDisk.values().next().value!);
+      mkdirSync(dirname(this.holdsPath), { recursive: true });
+      const temp = `${this.holdsPath}.${process.pid}.tmp`;
+      writeFileSync(temp, JSON.stringify([...this.heldOnDisk]));
+      renameSync(temp, this.holdsPath);
+    } catch (error) {
+      this.log("warn", "OmniRush session upload: the held chats could not be saved", { error: String(error) });
     }
   }
 

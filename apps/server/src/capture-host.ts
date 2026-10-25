@@ -276,8 +276,8 @@ export class CaptureHost {
   }
 
   /** The capture policy the server's binding keeps for the chat. */
-  holdUploads(sessionId: string, held: boolean): void {
-    this.sessionUploader.holdUploads(sessionId, held);
+  holdUploads(sessionId: string, state: "pending" | "refused" | "confirmed"): void {
+    this.sessionUploader.holdUploads(sessionId, state);
   }
 
   pinPolicy(sessionId: string, policy: string): void {

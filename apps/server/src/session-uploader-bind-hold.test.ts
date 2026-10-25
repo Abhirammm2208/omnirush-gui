@@ -37,7 +37,8 @@ describe("strict sessions under enforce: an unbound chat's uploads wait for its 
       retryBaseMs: 20,
     });
     // The broker held the chat at its first bind, which got no answer (origin unreachable).
-    uploader.holdUploads("ses-held", true);
+    uploader.holdUploads("ses-held", "pending");
+    uploader.holdUploads("ses-held", "refused");
     uploader.startSession("ses-held", "ws", root);
     uploader.recordTrace("ses-held", "tool.call", { name: "x" });
     uploader.flushTrace("ses-held");
@@ -50,7 +51,7 @@ describe("strict sessions under enforce: an unbound chat's uploads wait for its 
     expect((await uploader.spoolStatus()).entries).toBeGreaterThan(0);
     // The retry's bind is confirmed: the hold is released and the upload goes out after it.
     events.push("bind ses-held");
-    uploader.holdUploads("ses-held", false);
+    uploader.holdUploads("ses-held", "confirmed");
     await until(() => events.includes("upload ses-held"));
     expect(events[0]).toBe("bind ses-held");
     expect(events.filter((event) => event.startsWith("upload")).every((event) => event === "upload ses-held")).toBe(true);
@@ -71,11 +72,89 @@ describe("strict sessions under enforce: an unbound chat's uploads wait for its 
       changeDebounceMs: 10,
       fallbackScanMs: 60_000,
     });
-    uploader.holdUploads("ses-other", true);
+    uploader.holdUploads("ses-other", "pending");
     uploader.startSession("ses-free", "ws", root);
     uploader.recordTrace("ses-free", "tool.call", { name: "x" });
     uploader.flushTrace("ses-free");
     await until(() => events.includes("upload ses-free"));
     await uploader.stop();
+  });
+
+  test("bind refused, the app restarts: the new process keeps the chat held until a confirmed bind, then uploads", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omnirush-bind-hold-"));
+    roots.push(root);
+    await writeFile(join(root, "app.txt"), "hello\n");
+    const stateDir = join(root, "state");
+    const events: string[] = [];
+    let reachable = false;
+    const make = () => new SessionUploader({
+      stateDir,
+      upload: async (sessionId) => {
+        if (!reachable) throw new Error("connect ECONNREFUSED");
+        events.push(`upload ${sessionId}`);
+        return Response.json({ ok: true }, { status: 201 });
+      },
+      changeDebounceMs: 10,
+      fallbackScanMs: 60_000,
+      retryBaseMs: 20,
+    });
+    const first = make();
+    first.holdUploads("ses-restart", "pending");
+    first.holdUploads("ses-restart", "refused");
+    first.startSession("ses-restart", "ws", root);
+    first.recordTrace("ses-restart", "tool.call", { name: "x" });
+    first.flushTrace("ses-restart");
+    await until(async () => (await first.spoolStatus()).entries > 0);
+    await first.stop();
+    // A new process (no bind yet in it), and the server is back: its startup drain sends nothing for the chat.
+    reachable = true;
+    const second = make();
+    await second.drainSpool();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(events).toEqual([]);
+    expect((await second.spoolStatus()).entries).toBeGreaterThan(0);
+    // The retry's bind in the new process is confirmed: the upload goes out after it.
+    events.push("bind ses-restart");
+    second.holdUploads("ses-restart", "pending");
+    second.holdUploads("ses-restart", "confirmed");
+    await until(() => events.includes("upload ses-restart"));
+    expect(events[0]).toBe("bind ses-restart");
+    await second.stop();
+  });
+
+  test("bind confirmed, then the app restarts: the chat's spooled upload is not held", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omnirush-bind-hold-"));
+    roots.push(root);
+    await writeFile(join(root, "app.txt"), "hello\n");
+    const stateDir = join(root, "state");
+    const events: string[] = [];
+    let reachable = false;
+    const make = () => new SessionUploader({
+      stateDir,
+      upload: async (sessionId) => {
+        if (!reachable) throw new Error("connect ECONNREFUSED");
+        events.push(`upload ${sessionId}`);
+        return Response.json({ ok: true }, { status: 201 });
+      },
+      changeDebounceMs: 10,
+      fallbackScanMs: 60_000,
+      retryBaseMs: 20,
+    });
+    const first = make();
+    // Refused (kept on disk), its upload spooled, then confirmed while the server is still down: nothing is kept.
+    first.holdUploads("ses-confirmed", "pending");
+    first.holdUploads("ses-confirmed", "refused");
+    first.startSession("ses-confirmed", "ws", root);
+    first.recordTrace("ses-confirmed", "tool.call", { name: "x" });
+    first.flushTrace("ses-confirmed");
+    await until(async () => (await first.spoolStatus()).entries > 0);
+    first.holdUploads("ses-confirmed", "confirmed");
+    await first.stop();
+    expect(events).toEqual([]);
+    // A new process and the server is back: the startup drain sends the chat's upload, no bind needed.
+    reachable = true;
+    const second = make();
+    await until(() => events.includes("upload ses-confirmed"));
+    await second.stop();
   });
 });

@@ -1300,7 +1300,7 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     // Whether the chat's binding is verified, and why it was bound late (kept in its pin, never shown).
     onBinding: (sessionId, binding) => { void boxServiceFor(config).updatePin(sessionId, binding); },
     // Strict sessions under enforce: a chat's uploads wait for its confirmed binding.
-    onUploadHold: (sessionId, held) => { captureServicesByServer.get(config)?.holdUploads(sessionId, held); },
+    onUploadHold: (sessionId, state) => { captureServicesByServer.get(config)?.holdUploads(sessionId, state); },
     // The last strict-session switch per server: it stands while capabilities cannot be fetched.
     strictStateFile: join(runtimeStorageDir(config), "strict-sessions.json"),
     // The desktop's update gate (banner, blocked view); session uploads and
