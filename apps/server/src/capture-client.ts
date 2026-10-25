@@ -115,8 +115,9 @@ export type CaptureService = {
   /**
    * Resolves once the turn before's background processes finished writing
    * (with `lateWrites`, when that turn ended: LATE_WRITES_CAP_MS after its
-   * end at most) and capture v2's project archive took the session-start
-   * manifest (hash and stat only, START_GATE_MS at most); the prompt goes to
+   * end at most), capture v2's project archive took the session-start
+   * manifest (hash and stat only) and a new session's start snapshot read the
+   * folder (call startSession first; both START_GATE_MS at most); the prompt goes to
    * the engine after it. Never rejects.
    */
   archiveStartGate(sessionId: string, root: string, lateWrites?: LateWritesGate | null): Promise<void>;

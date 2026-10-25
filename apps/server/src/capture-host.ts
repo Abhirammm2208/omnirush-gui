@@ -34,6 +34,7 @@ import type { CommandEventType } from "./command-events.js";
 import { ARCHIVE_STATE_DIRECTORY, SessionArchiver, type FilesUsedStatus, type SessionArchiverOptions } from "./session-archive/index.js";
 import { archiveOwner } from "./session-archive/account-park.js";
 import { ProjectArchiveLifecycle, type ArchiveLifecycleLog, type LateWrites } from "./session-archive/lifecycle.js";
+import { START_GATE_MS } from "./session-archive/capture-v2.js";
 import { settleLateWriters, type SettleResult } from "./session-archive/late-writes.js";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { boxSnapshotsDir } from "./box/box.js";
@@ -416,7 +417,8 @@ export class CaptureHost {
     this.promptAt.set(sessionId, Date.now());
     // The turn before ended since its prompt (not a prompt into a running turn): its delta is taken first (lifecycle startGate).
     const previousEnded = previousStart !== undefined && endedAt !== null && endedAt >= previousStart;
-    await this.archive.startGate(sessionId, root, { previousEnded });
+    // With the session uploader's start scan (a new session, startSession called first): both read the folder before the prompt.
+    await Promise.all([this.archive.startGate(sessionId, root, { previousEnded }), this.sessionUploader.startScanned(sessionId, START_GATE_MS)]);
   }
 
   /** An engine was closed and `replacement` took over its sessions: observations reading it move there. */

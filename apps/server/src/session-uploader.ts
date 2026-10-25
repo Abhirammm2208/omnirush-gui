@@ -4695,6 +4695,8 @@ export class SessionUploader {
   private ledger: SessionLedger = { version: 1, sessions: {} };
   private ledgerWriteTail: Promise<void> = Promise.resolve();
   private readonly sessions = new Map<string, SessionState>();
+  /** Each started session's start scan, until it has read the folder (startScanned). */
+  private readonly startScans = new Map<string, { promise: Promise<void>; resolve: () => void }>();
   /** Turn windows per folder, shared by the app's processes on this machine (turn-overlap.ts). */
   private readonly turnWindows: TurnWindows;
   private readonly changeDebounceMs: number;
@@ -5352,6 +5354,20 @@ export class SessionUploader {
     return this.probedFeatures ?? NO_UPLOAD_FEATURES;
   }
 
+  /**
+   * Resolves once the session's start snapshot has read the folder (before
+   * its upload), or at once when there is none in progress; `capMs` at most.
+   * A first prompt that went to the engine sooner could write a file before
+   * the scan reads it: its turn would have no base for that file (no_base).
+   */
+  async startScanned(sessionId: string, capMs: number): Promise<void> {
+    const scanned = this.startScans.get(sessionId)?.promise;
+    if (!scanned) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([scanned, new Promise<void>((resolveCap) => { timer = setTimeout(resolveCap, capMs); timer.unref?.(); })]);
+    clearTimeout(timer);
+  }
+
   /** `turnsBefore`: the turns a reopened chat already had, so capture context numbers its turns on from them. */
   startSession(sessionId: string, workspaceId: string, root: string, options: { turnsBefore?: number } = {}): void {
     if (!this.enabled || this.sessions.has(sessionId) || !/^[A-Za-z0-9._:-]{8,128}$/.test(sessionId)) return;
@@ -5362,6 +5378,13 @@ export class SessionUploader {
     const toolchains = this.boxes.has(sessionId) ? this.boxToolchains : this.toolchains;
     void state.ready.then(() => withRedactionPolicy(state.redactionPolicy, () => toolchains?.get(root))).catch(() => null);
     this.journalMeta(state);
+    // The first prompt waits for the start scan (startScanned): what the turn writes is then seen as the turn's.
+    const scanned = Promise.withResolvers<void>();
+    this.startScans.set(sessionId, scanned);
+    const scanDone = () => {
+      scanned.resolve();
+      if (this.startScans.get(sessionId) === scanned) this.startScans.delete(sessionId);
+    };
     // Capture context collects once the start snapshot is out.
     let startSnapshotDone: () => void = () => undefined;
     const startSnapshot = new Promise<void>((resolveStart) => (startSnapshotDone = resolveStart));
@@ -5375,6 +5398,7 @@ export class SessionUploader {
         // seen by the scan or reported by a watcher.
         await this.uploadWorkspace(state, "start", state.resumed ? "resume" : "session_start");
       } finally {
+        scanDone();
         state.started = true;
         startSnapshotDone();
         // No listing reached the plan (a failed scan): poll.
@@ -6959,6 +6983,8 @@ export class SessionUploader {
       } finally {
         releaseScan();
       }
+      // The folder as the first prompt finds it is read: that prompt may go to the engine now.
+      if (type === "start") this.startScans.get(state.id)?.resolve();
       // Capture v2: the binary files and symlinks the manifest lists next to the text files.
       const extraEntries = scan.extrasScope === "full" ? new Map(scan.extras) : new Map(state.extras);
       if (scan.extrasScope !== "full") {

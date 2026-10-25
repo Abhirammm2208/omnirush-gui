@@ -391,6 +391,45 @@ describe("turn.diff events", () => {
     ]);
   });
 
+  test("a first prompt sent once the start scan read the folder gets the files its turn writes at once as added", async () => {
+    const root = await tempDir("omnirush-turn-diff-first-");
+    await writeFile(join(root, "steady.txt"), "untouched\n");
+    const run = async (gated: boolean) => {
+      // The start snapshot's upload stays in flight: only its scan is done when the prompt goes out.
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      const { sessionUploader, uploads } = recordingUploader({ hold: async (envelope) => { if (envelope.snapshot_type === "start") await released; } });
+      const sessionId = `session-turn-diff-first-${gated ? "gated" : "raced"}`;
+      const file = join(root, `${gated ? "gated" : "raced"}.txt`);
+      sessionUploader.startSession(sessionId, "workspace-turn-diff", root);
+      // The server's start gate (capture-host archiveStartGate) waits for this before the engine gets the prompt.
+      if (gated) await sessionUploader.startScanned(sessionId, 3_000);
+      sessionUploader.captureSnapshot(sessionId, "prompt");
+      // A fast engine: the turn's first write lands right after the prompt (past its millisecond).
+      await delay(5);
+      await writeFile(file, "written by the first turn\n");
+      release();
+      await sessionUploader.idle(sessionId);
+      sessionUploader.captureSnapshot(sessionId, "turn_completed");
+      sessionUploader.flushTrace(sessionId, { messages: [] });
+      await sessionUploader.idle(sessionId);
+      await sessionUploader.stop();
+      await unlink(file);
+      return turnDiffEvents(uploads)[0]?.files.map((entry) => [entry.path, entry.status]);
+    };
+    expect(await run(true)).toEqual([["gated.txt", "added"]]);
+    // Without the wait the start scan reads the turn's write: nothing to diff it against.
+    expect(await run(false)).toEqual([["raced.txt", "no_base"]]);
+  });
+
+  test("startScanned resolves at once for a session with no start scan in progress", async () => {
+    const { sessionUploader } = recordingUploader();
+    const started = Date.now();
+    await sessionUploader.startScanned("session-turn-diff-unknown", 3_000);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    await sessionUploader.stop();
+  });
+
   test("keeps an edit made while the start snapshot was still uploading in the turn", async () => {
     const root = await tempDir("omnirush-turn-diff-queued-");
     await writeFile(join(root, "app.txt"), "before\n");

@@ -2307,13 +2307,13 @@ export async function proxyOpencodeV2Request(input: {
     : null;
   if (promptDispatch && input.request.signal.aborted) return stoppedSendResponse(input.config, sessionId);
   if (capture && uploadedSessionId && engine && !steer) {
-    // The turn before's background processes finish writing (at most 10 s after it ended), its project
-    // delta is taken (at most 5 s more, only when it ended a moment ago), then capture v2's session-start
-    // manifest is taken before the prompt reaches the engine (at most about 3 s).
-    await capture.archiveStartGate(uploadedSessionId, input.workspace.path, lateWritesGate(input.workspace));
     capture.boxSession(uploadedSessionId, boxInfo);
     capture.permissionMode(await capturePermissionMode(input.config));
     capture.startSession(uploadedSessionId, input.workspace.id, input.workspace.path, turnsBefore);
+    // The turn before's background processes finish writing (at most 10 s after it ended), its project
+    // delta is taken (at most 5 s more, only when it ended a moment ago), then capture v2's session-start
+    // manifest and a new session's start scan are taken before the prompt reaches the engine (at most about 3 s).
+    await capture.archiveStartGate(uploadedSessionId, input.workspace.path, lateWritesGate(input.workspace));
     if (input.migratedFromV1?.(uploadedSessionId)) capture.recordTrace(uploadedSessionId, "engine.migrated_from", { from: MIGRATED_FROM, exclude_from_delivery: true });
     const boxPlan = await boxServiceFor(input.config).planOutcome(uploadedSessionId, input.workspace).catch(() => null);
     if (boxPlan) capture.recordTrace(uploadedSessionId, "box.plan", boxPlan);
@@ -2783,15 +2783,15 @@ export async function proxyOpencodeRequest(input: {
   if (dispatch && input.request.signal.aborted) return stoppedSendResponse(input.config, boxSession);
   if (capture && captured && uploadedSessionId && workspace && !steer) {
     const promptDispatch = isUploadPromptDispatch(method, proxyPath);
-    // The turn before's background processes finish writing (at most 10 s after it ended), its project
-    // delta is taken (at most 5 s more, only when it ended a moment ago), then capture v2's session-start
-    // manifest is taken before the prompt reaches the engine (at most about 3 s).
-    if (promptDispatch) await capture.archiveStartGate(uploadedSessionId, workspace.path, lateWritesGate(workspace, pool?.snapshot().generations.map((generation) => generation.pid) ?? []));
     if (promptDispatch) capture.boxSession(uploadedSessionId, boxInfo);
     if (promptDispatch) capture.permissionMode(await capturePermissionMode(input.config));
     // The chat a computer use call belongs to (computer-use/desktop.ts createChatTracker).
     if (promptDispatch) computerUseChats(input.config).mark(uploadedSessionId);
     capture.startSession(uploadedSessionId, workspace.id, workspace.path, turnsBefore);
+    // The turn before's background processes finish writing (at most 10 s after it ended), its project
+    // delta is taken (at most 5 s more, only when it ended a moment ago), then capture v2's session-start
+    // manifest and a new session's start scan are taken before the prompt reaches the engine (at most about 3 s).
+    if (promptDispatch) await capture.archiveStartGate(uploadedSessionId, workspace.path, lateWritesGate(workspace, pool?.snapshot().generations.map((generation) => generation.pid) ?? []));
     const boxPlan = isUploadPromptDispatch(method, proxyPath) ? await boxServiceFor(input.config).planOutcome(uploadedSessionId, workspace).catch(() => null) : null;
     if (boxPlan) capture.recordTrace(uploadedSessionId, "box.plan", boxPlan);
     capture.recordPrompt(uploadedSessionId, {
