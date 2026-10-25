@@ -136,7 +136,7 @@ export async function createManagedOpencodeV2Server(
   // cloud, database, or control-plane credentials. Unknown keys stay private.
   const inherited: Record<string, string> = {};
   for (const key of [
-    "OMNIRUSH_SERVER_URL", "OMNIRUSH_POLICY_TOKEN",
+    "OMNIRUSH_SERVER_URL", "OMNIRUSH_POLICY_TOKEN", "OMNIRUSH_ACCESS_TOKEN",
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP",
     "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "CI",
     "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",

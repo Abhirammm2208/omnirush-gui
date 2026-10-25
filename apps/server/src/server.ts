@@ -1749,6 +1749,9 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
       if (mount && (mount.restPath === "/opencode" || mount.restPath.startsWith("/opencode/"))) {
         return proxyWorkspaceOpencodeMount(mount);
       }
+      if (mount && (mount.restPath === "/opencode2" || mount.restPath.startsWith("/opencode2/"))) {
+        return proxyWorkspaceOpencodeV2Mount(mount);
+      }
 
       // Allow clients to use a mounted base URL (e.g. http://host:8787/w/<id>) while
       // still calling the existing /workspace/:id/* API surface.
@@ -1765,6 +1768,11 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
           return finalize(jsonResponse({ code: "not_found", message: "Not found" }, 404));
         }
         url.pathname = mount.restPath;
+      }
+
+      // The global 2.x client (web, gateway): the first workspace's engine, as /opencode below.
+      if ((url.pathname === "/opencode2" || url.pathname.startsWith("/opencode2/")) && config.workspaces[0]) {
+        return proxyWorkspaceOpencodeV2Mount({ workspaceId: config.workspaces[0].id, restPath: url.pathname });
       }
 
       if (url.pathname === "/opencode" || url.pathname.startsWith("/opencode/")) {
@@ -2052,11 +2060,11 @@ export async function proxyOpencodeV2Request(input: {
   try { decodedPath = decodeURIComponent(forwardedPath); } catch { decodedPath = routePath; }
   // Runtime provider configuration contains server-owned credentials. The
   // renderer uses the catalog/status APIs; it must not read or mutate this file.
-  if (/^\/api\/config(?:\/|$)/.test(decodedPath)) {
+  if (/^\/api\/(?:experimental\/)?config(?:\/|$)/.test(decodedPath)) {
     throw new ApiError(403, "engine_config_private", "Engine configuration is private");
   }
   // MCP servers follow the server's list (engine-v2-mcp.ts): the engine's own MCP routes stay closed.
-  if (/^(?:\/api)?\/mcp(?:\/|$)/.test(decodedPath) && method !== "GET" && method !== "HEAD") {
+  if (/^(?:\/api(?:\/experimental)?)?\/mcp(?:\/|$)/.test(decodedPath) && method !== "GET" && method !== "HEAD") {
     throw new ApiError(403, "engine_mcp_managed", "Manage connections through OmniRush.ai");
   }
   const sessionMatch = routePath.match(/^\/api\/session\/([^/]+)(?:\/|$)/);

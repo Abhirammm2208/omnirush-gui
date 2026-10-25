@@ -21,6 +21,8 @@ import type { EnvService } from "./env-file.js";
 import { selectPrimaryCredentialEnvName } from "./managed-provider-auth.js";
 import { isReleaseBuild } from "./release-guard.js";
 import { webSearchSetting } from "./web-search.js";
+import { buildOmniRushRuntimeConfigObject } from "./omnirush-runtime-config.js";
+import { OMNIRUSH_PROVIDER_ID } from "./provider-lock/provider-lock.mjs";
 import { desiredV2Mcp, v2McpGate } from "./engine-v2-mcp.js";
 import { engineDataDir } from "./engine-data-home.js";
 import { computerUseEngineEnv } from "./computer-use/desktop.js";
@@ -29,10 +31,13 @@ import type { ServerConfig } from "./types.js";
 
 const PREVIEW_STATE_FILE = "engine-v2-preview.json";
 const UNSET_API_KEY = "omnirush-engine-v2-preview-unset";
+/** The local gateway broker's key for the engine (the 1.x engine reads the same variable). */
+const ENGINE_TOKEN_ENV = "OMNIRUSH_ACCESS_TOKEN";
 /** opencode-plugins/omnirush-session-next.ts's id (server modules never import plugin files). */
 export const OMNIRUSH_SESSION_PLUGIN_ID = "omnirush.session";
 /** How long a prompt waits for a project's MCP servers to connect. */
 const MCP_READY_TIMEOUT_MS = 15_000;
+const MCP_TOOLS_SETTLE_MS = 750;
 // A cold sidecar can return HTTP 503 while its model catalog initializes for 17–20 seconds.
 const CATALOG_MIRROR_TIMEOUT_MS = 60_000;
 
@@ -346,6 +351,9 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
         if (!waiting) break;
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
+      // The engine reports a server connected a moment before a new session gets its tools (measured on 2.0.32-r3).
+      // shortcut: a fixed settle; replace with an engine signal for "tools ready" if one is added.
+      if (Object.keys(desired).length > 0) await new Promise((resolve) => setTimeout(resolve, MCP_TOOLS_SETTLE_MS));
       mcpCleaned.add(directory);
     })();
     mcpInFlight.set(directory, pending);
@@ -378,6 +386,14 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
     if (!active) return;
     const providerMap = runtimeProviderMap(await readGlobalRuntimeOpencodeConfig(config));
     const credentials = new Map((await options.env?.list() ?? []).map((entry) => [entry.key, entry.value]));
+    // The account's own provider (the local gateway broker, with the synced model catalog), as the 1.x engine
+    // gets it. Its key stays in the engine's environment (blanked in agent shells), never in a config file.
+    const injected = await buildOmniRushRuntimeConfigObject(config).catch(() => ({}) as Record<string, unknown>);
+    const gateway = isRecord(injected.provider) ? injected.provider[OMNIRUSH_PROVIDER_ID] : undefined;
+    if (isRecord(gateway) && config.omnirushEngineToken) {
+      providerMap[OMNIRUSH_PROVIDER_ID] = gateway;
+      credentials.set(ENGINE_TOKEN_ENV, `{env:${ENGINE_TOKEN_ENV}}`);
+    }
     const mapped = mapRuntimeProvidersToV2Specs(providerMap, credentials);
     const nextMirroredProviderIds = mapped.specs.map((spec) => spec.id);
     await active.setProviders(mapped.specs);
@@ -459,7 +475,10 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
     const managed = await createManagedOpencodeV2Server({
       bin: resolved.bin,
       rootDir,
-      env: { ...opencodeModelsEnv, OMNIRUSH_SERVER_URL: `http://127.0.0.1:${config.port}`, OMNIRUSH_POLICY_TOKEN: managedDesktopPolicy(config).evaluationToken },
+      env: {
+        ...opencodeModelsEnv, OMNIRUSH_SERVER_URL: `http://127.0.0.1:${config.port}`, OMNIRUSH_POLICY_TOKEN: managedDesktopPolicy(config).evaluationToken,
+        ...(config.omnirushEngineToken ? { [ENGINE_TOKEN_ENV]: config.omnirushEngineToken } : {}),
+      },
       permissions: async () => executionRules((await readGlobalRuntimeOpencodeConfig(config)).managedPolicy?.execution),
       webSearch: () => webSearchSetting({ env: process.env, stateDir: runtimeStorageDir(config) }).enabled,
       mcpGate: v2McpGate(runtimeStorageDir(config), { ...process.env, ...computerUseEngineEnv(runtimeStorageDir(config)) }),
@@ -576,7 +595,8 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
         const payload = isRecord(response.json) ? response.json.data : undefined;
         if (response.status === 200 && Array.isArray(payload) && mirroredSpecs.every((spec) =>
           payload.some((provider) => isRecord(provider) && provider.id === spec.id
-            && isRecord(provider.settings) && provider.settings.apiKey === spec.apiKey)
+            // A key the engine reads from its environment shows resolved (or not at all): its presence is enough.
+            && (spec.apiKey.startsWith("{env:") || (isRecord(provider.settings) && provider.settings.apiKey === spec.apiKey)))
         )) return;
         await new Promise((resolve) => setTimeout(resolve, 100));
       } while (Date.now() < deadline);
