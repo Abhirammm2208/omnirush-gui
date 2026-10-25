@@ -384,28 +384,36 @@ export function ModelSelect({
     && selectedThinkingOptions.length > 0
     && Boolean(effectiveBehaviorLabel);
 
-  const applyModel = (option: ModelOption, behavior?: string | null) => {
-    const next = { providerID: option.providerID, modelID: option.modelID };
-    // The route may take the pick instead (a new-chat popup, Claude, a message).
-    if (useModelPickGate.getState().intercept(next, sessionId ?? null)) {
-      setSearch("");
-      setThinkingFor(null);
-      setPane("root");
-      onOpenChange(false);
-      return;
-    }
-    useModelCollectionsStore.getState().recordRecent(option);
-    onChange(next, behavior);
-    if (behavior !== undefined) {
-      onBehaviorChange?.(behavior);
-    }
+  const closePicker = () => {
     setSearch("");
     setThinkingFor(null);
     setPane("root");
     onOpenChange(false);
   };
 
+  // The route may take the pick instead (a new-chat popup, Claude, a message); a plain switch is not taken.
+  const routeTakesPick = (option: ModelOption) =>
+    useModelPickGate.getState().intercept({ providerID: option.providerID, modelID: option.modelID }, sessionId ?? null);
+
+  const applyModel = (option: ModelOption, behavior?: string | null) => {
+    if (routeTakesPick(option)) {
+      closePicker();
+      return;
+    }
+    useModelCollectionsStore.getState().recordRecent(option);
+    onChange({ providerID: option.providerID, modelID: option.modelID }, behavior);
+    if (behavior !== undefined) {
+      onBehaviorChange?.(behavior);
+    }
+    closePicker();
+  };
+
   const handleSelect = (option: ModelOption) => {
+    // Before the effort step: a pick the route takes never asks for an effort first.
+    if (routeTakesPick(option)) {
+      closePicker();
+      return;
+    }
     const thinking = thinkingOptionsFor(option);
     if (thinking.length > 0 && onBehaviorChange) {
       setThinkingFor(option);
