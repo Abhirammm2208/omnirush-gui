@@ -2917,14 +2917,14 @@ export function createOmniRushServerClient(options: { baseUrl: string; token?: s
         signal,
       }),
 
-    /** The engine's language features for the editor (the project's own language servers); see the engine's /editor routes. */
+    /** The editor's language features (the app server's language-server host, editor-lsp.ts). */
     editorLsp: <T = unknown>(
       workspaceId: string,
       op: "diagnostics" | "hover" | "definition" | "references" | "symbols" | "rename",
       payload: { path?: string; line?: number; character?: number; newName?: string; text?: string },
       signal?: AbortSignal,
     ) =>
-      requestJson<T>(baseUrl, `/workspace/${encodeURIComponent(workspaceId)}/opencode/editor/lsp/${op}`, {
+      requestJson<T>(baseUrl, `/workspace/${encodeURIComponent(workspaceId)}/editor/lsp/${op}`, {
         token,
         hostToken,
         method: "POST",

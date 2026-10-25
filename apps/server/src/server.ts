@@ -234,6 +234,7 @@ import { CloudProviderSync, parseCloudProviderDenSession } from "./cloud-provide
 import { createEngineV2Preview, resolveInitialEngineV2PreviewState, type EngineV2Preview } from "./engine-v2-preview.js";
 import { MIGRATED_FROM } from "./engine-v2-migration.js";
 import { createV2BudgetWrap } from "./engine-v2-budget-wrap.js";
+import { createEditorLsp, LSP_OPS, type LspOp, type LspPayload } from "./editor-lsp.js";
 import { APP_SECRET_HEADER, appRequestRefusal } from "./app-request-gate.js";
 import { isUploadFileDenied, sessionUploaderEnabled } from "./session-uploader.js";
 import { editorUserEditEvent, editorUserReviewEvent } from "./editor-events.js";
@@ -303,6 +304,15 @@ async function capturePermissionMode(config: ServerConfig): Promise<ApprovalMode
 /** Automatic compaction (session-archive/auto-compact.ts), one per server: its counts live as long as the app. */
 const autoCompactorsByServer = new WeakMap<ServerConfig, AutoCompactor>();
 const engineV2ByServer = new WeakMap<ServerConfig, EngineV2Preview>();
+const editorLspByServer = new WeakMap<ServerConfig, ReturnType<typeof createEditorLsp>>();
+function editorLspFor(config: ServerConfig): ReturnType<typeof createEditorLsp> {
+  let host = editorLspByServer.get(config);
+  if (!host) {
+    host = createEditorLsp({ toolsDir: join(runtimeStorageDir(config), "language-servers") });
+    editorLspByServer.set(config, host);
+  }
+  return host;
+}
 /**
  * How long a prompt waits for its chat's automatic compaction: the window
  * aborts a prompt request after 30 s, and the prompt's own capture steps
@@ -1929,6 +1939,7 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     captureServerException(error, { method: "START", route: "startServer" });
     cloudProviderSync.stop();
     await engineV2Preview.stop().catch(() => undefined);
+    editorLspByServer.get(config)?.close();
     engineInstanceReaper.close();
     clearEngineInstanceReaperForConfig(config);
     invalidateEngineMcpServerState(config, engineMcpServerState);
@@ -2032,6 +2043,7 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
       cloudProviderSync.stop();
       modelCatalogSync.stop();
       await engineV2Preview.stop().catch(() => undefined);
+      editorLspByServer.get(config)?.close();
       engineInstanceReaper.close();
       clearEngineInstanceReaperForConfig(config);
       invalidateEngineMcpServerState(config, engineMcpServerState);
@@ -5212,6 +5224,26 @@ function createRoutes(
   // The desktop editor. A save or a hunk review that names a chat the session
   // uploader is tracking adds a "user_edit" / "user_review" trace event to it;
   // nothing else in a chat's upload changes (editor-events.ts).
+  // The editor's language features (editor-lsp.ts): the app's own language-server host.
+  addRoute(routes, "POST", "/workspace/:id/editor/lsp/:op", "client", async (ctx) => {
+    const op = ctx.params.op as LspOp;
+    if (!LSP_OPS.includes(op)) throw new ApiError(404, "not_found", "Unknown language request");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    if (workspace.workspaceType === "remote") throw new ApiError(404, "not_found", "Language features run for local projects only");
+    const input = await readJsonBody(ctx.request);
+    const payload: LspPayload = {
+      ...(typeof input.path === "string" ? { path: input.path } : {}),
+      ...(typeof input.line === "number" ? { line: input.line } : {}),
+      ...(typeof input.character === "number" ? { character: input.character } : {}),
+      ...(typeof input.newName === "string" ? { newName: input.newName } : {}),
+      ...(typeof input.text === "string" ? { text: input.text } : {}),
+    };
+    try {
+      return jsonResponse(await editorLspFor(config).run(await realpath(workspace.path).catch(() => workspace.path), op, payload));
+    } catch (error) {
+      throw new ApiError(400, "invalid_payload", error instanceof Error ? error.message : String(error));
+    }
+  });
   // /btw: a side question about a chat, answered without touching it (side-question.ts).
   addRoute(routes, "POST", "/workspace/:id/btw", "client", async (ctx) => {
     const workspace = await resolveWorkspace(config, ctx.params.id);
