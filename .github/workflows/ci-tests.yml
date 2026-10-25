@@ -86,7 +86,7 @@ jobs:
             ~/.cache/electron
             ~/.cache/electron-builder
             apps/desktop/resources/sidecars
-          key: ${{ runner.os }}-${{ runner.arch }}-desktop-smoke-${{ hashFiles('constants.json', 'pnpm-lock.yaml', 'apps/desktop/scripts/prepare-sidecar.mjs', 'apps/desktop/scripts/engine-release.json') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-desktop-smoke-${{ hashFiles('constants.json', 'pnpm-lock.yaml', 'apps/desktop/scripts/prepare-sidecar.mjs', 'apps/desktop/scripts/engine-release.json', 'apps/desktop/scripts/engine-v2-release.json') }}
       - name: Setup tests
         id: setup
         uses: ./.github/actions/setup-tests

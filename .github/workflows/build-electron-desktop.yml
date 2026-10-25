@@ -358,13 +358,13 @@ jobs:
         run: |
           set -euo pipefail
           app=$(find apps/desktop/dist-electron -maxdepth 2 -name '*.app' -type d | head -n 1)
-          engine="$app/Contents/Resources/sidecars/opencode-aarch64-apple-darwin"
+          engine="$app/Contents/Resources/sidecars/opencode2-aarch64-apple-darwin"
           codesign --verify --strict --verbose=2 "$engine"
           codesign -dv --verbose=4 "$engine" 2>&1 | grep -E '^(Authority|TeamIdentifier|Runtime|Identifier)'
           codesign -dv --verbose=4 "$engine" 2>&1 | grep -q '^Authority=Developer ID Application' || { echo "the bundled engine is not Developer ID signed" >&2; exit 1; }
           version=$("$engine" --version)
           echo "bundled engine: $version"
-          test "$version" = "$(node -p "require('./apps/desktop/scripts/engine-release.json').version")"
+          test "$version" = "omnirush v$(node -p "require('./apps/desktop/scripts/engine-v2-release.json').version")"
 
       # The notarized app must accept and start its own bundled engine (signing rewrites the engine
       # after packaging records its sha256): the app's own checks with its own runtime, then a real start.

@@ -12,6 +12,7 @@ on:
       - apps/desktop/electron-builder*.yml
       - apps/desktop/scripts/prepare-sidecar.mjs
       - apps/desktop/scripts/engine-release.json
+      - apps/desktop/scripts/engine-v2-release.json
       - packaging/aur/**
       - scripts/aur/**
       - .github/workflows/release-desktop.yml
@@ -118,7 +119,7 @@ jobs:
           echo "launcher -> $(readlink -f /usr/bin/omnirush)"
           file -L /usr/bin/omnirush | tee /dev/stderr | grep -q "${{ matrix.file_arch }}"
           install_dir=$(dirname "$(readlink -f /usr/bin/omnirush)")
-          target_sidecar="$install_dir/resources/sidecars/opencode-${{ matrix.target }}"
+          target_sidecar="$install_dir/resources/sidecars/opencode2-${{ matrix.target }}"
           file -L "$target_sidecar" | tee /dev/stderr | grep -q "${{ matrix.file_arch }}"
           test ! -e "$install_dir/resources/sidecars/opencode"
           # Still running when the timer fires (exit 124) = it started.
