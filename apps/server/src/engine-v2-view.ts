@@ -114,7 +114,18 @@ function compactionSummary(message: Rec, sessionID: string): Rec | null {
 /** A message list for the shared modules: 1.x lists unchanged, 2.x lists as their 1.x view. */
 export function v1View(messages: readonly unknown[], sessionID = ""): unknown[] {
   if (!isV2Messages(messages)) return [...messages];
-  return messages.flatMap((message) => [v1ViewOf(message, sessionID), isRecord(message) ? compactionSummary(message, sessionID) : null]).filter((message): message is Rec => message !== null);
+  // A 2.x prompt names no model: the chat's model as of that prompt (its last model switch, else the model
+  // of the answer before it) goes on the 1.x user message, as 1.x prompts carried it (auto-compact.ts lastPromptModel).
+  let model: { providerID: string; modelID: string } | null = null;
+  return messages.flatMap((message) => {
+    if (isRecord(message) && isRecord(message.model) && typeof message.model.id === "string" && typeof message.model.providerID === "string"
+      && (message.type === "model-switched" || message.type === "assistant")) {
+      model = { providerID: message.model.providerID, modelID: message.model.id };
+    }
+    const view = v1ViewOf(message, sessionID);
+    if (view && model && isRecord(view.info) && view.info.role === "user" && isRecord(message) && message.type === "user") view.info = { ...view.info, model };
+    return [view, isRecord(message) ? compactionSummary(message, sessionID) : null];
+  }).filter((message): message is Rec => message !== null);
 }
 
 /** The sub-agent sessions a 2.x turn started (its `subagent` calls' child sessions). */
