@@ -139,8 +139,8 @@ test("steering and automatic compaction use the 2.x engine's routes", async () =
   expect(await tracker.classify("ses_busy")).toMatchObject({ steer: false, reason: "compacting" });
   const engine = desktopAutoCompactEngine(target, "ses_busy", fetchImpl as never);
   expect(await engine.busy()).toBe(true);
-  await engine.removeMessage("cmp_1_summary");
-  await engine.abort();
+  await engine.removeMessage!("cmp_1_summary");
+  await engine.abort!();
   expect(calls).toContain("DELETE /api/session/ses_busy/inbox/cmp_1");
   expect(calls).toContain("POST /api/session/ses_busy/interrupt");
 });

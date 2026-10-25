@@ -301,6 +301,7 @@ async function capturePermissionMode(config: ServerConfig): Promise<ApprovalMode
 
 /** Automatic compaction (session-archive/auto-compact.ts), one per server: its counts live as long as the app. */
 const autoCompactorsByServer = new WeakMap<ServerConfig, AutoCompactor>();
+const engineV2ByServer = new WeakMap<ServerConfig, EngineV2Preview>();
 /**
  * How long a prompt waits for its chat's automatic compaction: the window
  * aborts a prompt request after 30 s, and the prompt's own capture steps
@@ -1115,6 +1116,15 @@ type EngineRequestTarget = { baseUrl: string; headers: Headers };
 async function captureEngineTarget(config: ServerConfig, sessionId: string, workspaceId: string): Promise<EngineTarget | null> {
   const workspace = config.workspaces.find((item) => item.id === workspaceId);
   if (!workspace || workspace.workspaceType === "remote") return null;
+  // The 2.x engine (every chat since it shipped), when it has the chat in this workspace's folder.
+  const v2 = engineV2ByServer.get(config)?.connection();
+  if (v2) {
+    const headers = new Headers({ authorization: `Basic ${Buffer.from(`opencode:${v2.password}`).toString("base64")}` });
+    const search = `?${new URLSearchParams({ "location[directory]": workspace.path })}`;
+    const found = await loopbackFetch(buildOpencodeProxyUrl(v2.url, `/api/session/${encodeURIComponent(sessionId)}`, search), { headers, signal: AbortSignal.timeout(ENGINE_SESSION_CHECK_TIMEOUT_MS) })
+      .then(async (response) => { await response.body?.cancel().catch(() => undefined); return response.ok; }).catch(() => false);
+    if (found) return engineTarget(v2.url, headers, search, "v2");
+  }
   const route = enginePoolForConfig(config)?.routeRequest("GET", `/session/${sessionId}/message`) ?? null;
   const connection = route ? null : resolveWorkspaceOpencodeConnection(config, workspace);
   const baseUrl = route?.target.baseUrl ?? connection?.baseUrl?.trim() ?? "";
@@ -1529,6 +1539,7 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     if (config.workspaces.length > 0) cloudProviderSync.markReloadPending();
   };
   const engineV2Preview = createEngineV2Preview({ config, env, deferStart: true });
+  engineV2ByServer.set(config, engineV2Preview);
   const bestPracticesReloads = new BestPracticesEngineReloads({
     isBusy: (workspace) => engineHasActiveSessions(config, workspace, true),
     reload: (workspace) => reloadOpencodeEngine(config, workspace, engineMcpServerState, { reason: "engine_reload" }),

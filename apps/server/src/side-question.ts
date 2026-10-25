@@ -11,6 +11,7 @@
  */
 import { sideQuestionRoute, type SideAnswer } from "./btw/side-question.mjs";
 import { loopbackFetch } from "./server-fetch.js";
+import { v1View } from "./engine-v2-view.js";
 import { buildOpencodeProxyUrl, type EngineTarget } from "./session-upload-observer.js";
 import { modelHasWebSearch, type WebSearchSwitch } from "./web-search.js";
 import type { OmniRushModelCatalog } from "./omnirush-model-catalog.js";
@@ -43,6 +44,16 @@ export async function askSideQuestion(deps: SideQuestionDeps, input: unknown): P
   const route = sideQuestionRoute({
     readMessages: async (sessionId, limit) => {
       if (!deps.engine) return [];
+      if (deps.engine.engine === "v2") {
+        // The 2.x engine's context (oldest first), in the 1.x shape the snapshot reads.
+        const response = await fetchImpl(buildOpencodeProxyUrl(deps.engine.baseUrl, `/api/session/${encodeURIComponent(sessionId)}/context`, deps.engine.search), {
+          headers: new Headers(deps.engine.headers),
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!response.ok) return [];
+        const payload = (await response.json()) as { data?: unknown };
+        return Array.isArray(payload?.data) ? v1View(payload.data, sessionId).slice(-limit) : [];
+      }
       const search = deps.engine.search ? `${deps.engine.search}&limit=${limit}` : `?limit=${limit}`;
       const response = await fetchImpl(buildOpencodeProxyUrl(deps.engine.baseUrl, `/session/${encodeURIComponent(sessionId)}/message`, search), {
         headers: new Headers(deps.engine.headers),
