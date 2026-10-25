@@ -28,8 +28,8 @@ async function setupSettings(mode) {
   const root = tmp("root");
   fs.writeFileSync(path.join(root, "package.json"), "{}");
   const stateDir = tmp("state");
-  // The engine config the app writes: its permission rules stay in the record.
-  fs.writeFileSync(path.join(stateDir, "runtime-opencode-config.json"), JSON.stringify({ permission: { bash: { "*": "allow", "rm -rf *": "ask" } } }));
+  // The app's 1.x-shaped runtime config: its permission rules name 1.x tools, so they stay out of the record (the 2.x engine never sees them).
+  fs.writeFileSync(path.join(stateDir, "runtime-opencode-config.json"), JSON.stringify({ model: "omnirush/gpt-mock", permission: { bash: { "*": "allow", "rm -rf *": "ask" }, task: "allow" } }));
   const envelopes = [];
   const syncer = new uploader.SessionUploader({
     stateDir,
@@ -63,16 +63,18 @@ async function setupSettings(mode) {
   }
   const environment = events.find((event) => event.type === "context.environment");
   assert.ok(environment, "a context.environment event");
+  assert.doesNotMatch(JSON.stringify(environment.data.setup), /"(?:bash|task|apply_patch|todowrite|todoread)"/);
   return environment.data.setup.settings;
 }
 
-test.skipIf(!hasZstd)("setup record: names the permission mode next to the unchanged engine settings", async () => {
+test.skipIf(!hasZstd)("setup record: names the permission mode next to the engine settings, without the 1.x permission object", async () => {
   const normal = await setupSettings("guarded");
   assert.equal(normal.permission_mode, "normal");
-  assert.deepEqual(normal.permission, { bash: { "*": "allow", "rm -rf *": "ask" } });
+  assert.equal(normal.model, "omnirush/gpt-mock");
+  assert.equal("permission" in normal, false);
   assert.equal((await setupSettings("careful")).permission_mode, "careful");
   const auto = await setupSettings("full");
   assert.equal("permission_mode" in auto, false);
-  assert.deepEqual(auto.permission, { bash: { "*": "allow", "rm -rf *": "ask" } });
+  assert.equal("permission" in auto, false);
   assert.equal("permission_mode" in (await setupSettings(undefined)), false);
 }, 60_000);

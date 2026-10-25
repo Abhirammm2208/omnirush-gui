@@ -4997,7 +4997,10 @@ export class SessionUploader {
       // The app's own runtime skills and engine config live in its state directory (omnirush-runtime-config.ts).
       bundledSkillDirs: stateDir ? [join(stateDir, "skills")] : [],
       configFiles: stateDir ? [join(stateDir, "runtime-opencode-config.json")] : [],
-      settings: () => permissionSetupSettings(this.permissionModeNow),
+      // The app's engine config above is the 1.x-shaped runtime config: its `permission` object names 1.x
+      // tools (bash, task...) the 2.x engine never sees (it gets its own `permissions` rules). Left out:
+      // these settings win over the configs' (context/setup.ts), and an undefined key is not serialized.
+      settings: () => ({ permission: undefined, ...permissionSetupSettings(this.permissionModeNow) }),
       log: this.log,
       ...(installLog ? { installLog: { ...installLog, gate: () => this.installLogGate(), appDirs: stateDir ? [stateDir] : [] } } : {}),
       ...overrides,
