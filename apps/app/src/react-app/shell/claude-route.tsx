@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import { Button } from "@/components/ui/button";
 import { isDesktopRuntime } from "@/app/lib/runtime-env";
 import { useBootState } from "./boot-state";
@@ -28,6 +28,9 @@ function WorkspaceClaudeRoute({workspaceId}: {workspaceId: string | undefined}) 
   const [prompt, setPrompt] = useState(""), [command, setCommand] = useState("");
   const [consent, setConsent] = useState(false), [busy, setBusy] = useState(false);
   const [error, setError] = useState(""), [notice, setNotice] = useState("");
+  // The model a new session starts on: the picker's choice (?model=) when this account may run it.
+  const [searchParams] = useSearchParams();
+  const [models, setModels] = useState<Array<{id: string; name: string}>>([]), [model, setModel] = useState("");
   const request = useCallback(async <T,>(route: string, body?: unknown): Promise<T> => {
     if (!endpoint) throw new Error("Workspace server is unavailable");
     endpoint.signal.throwIfAborted();
@@ -40,12 +43,15 @@ function WorkspaceClaudeRoute({workspaceId}: {workspaceId: string | undefined}) 
   }, [connecting, markRouteReady]);
   const refresh = useCallback(async () => {
     const [status, items] = await Promise.all([
-      request<{allowed: boolean; sandboxReady: boolean}>("status"),
+      request<{allowed: boolean; sandboxReady: boolean; models?: string[]; catalog?: Array<{id: string; name: string}>}>("status"),
       request<Session[]>("sessions"),
     ]);
     setAllowed(status.allowed); setReady(status.sandboxReady);
+    const runnable = (status.models ?? []).map(id => ({id, name: status.catalog?.find(entry => entry.id === id)?.name ?? id}));
+    setModels(runnable);
+    setModel(current => runnable.some(entry => entry.id === current) ? current : runnable.find(entry => entry.id === searchParams.get("model"))?.id ?? runnable[0]?.id ?? "");
     setSessions(items); setLoaded(true);
-  }, [request]);
+  }, [request, searchParams]);
   useEffect(() => {
     setLoaded(false); setAllowed(false); setReady(false);
     if (endpoint) void refresh().catch(e => {
@@ -111,16 +117,17 @@ function WorkspaceClaudeRoute({workspaceId}: {workspaceId: string | undefined}) 
   }
   return <main className="mx-auto h-full max-w-5xl space-y-4 overflow-auto p-6" aria-label={surface === "full" ? "Claude Code workspace" : "Saved sessions"}>
     <header className="flex items-center justify-between">{surface === "full"
-      ? <div><h1 className="text-xl font-semibold">Claude Code</h1><p className="text-sm text-muted-foreground">Opus 5.5 · Private sandbox sessions</p></div>
+      ? <div><h1 className="text-xl font-semibold">Claude Code</h1><p className="text-sm text-muted-foreground">{models.find(entry => entry.id === model)?.name ?? "Claude"} · Private sandbox sessions</p></div>
       : <div><h1 className="text-xl font-semibold">Saved sessions</h1><p className="text-sm text-muted-foreground">Export or recover the sessions saved here.</p></div>}<Link to={`/workspace/${workspaceId}/session`}>Back to chats</Link></header>
     {error && <p role="alert" className="rounded border border-destructive p-3">{error}</p>}
     {notice && <p role="status" data-testid="claude-notice" className="sticky top-0 z-10 rounded border bg-background p-3">{notice}</p>}
     <>
-      {allowed && !ready && <p>Start Docker Desktop or Docker Engine, then <button onClick={() => void act(refresh)}>check again</button>.</p>}
+      {allowed && !ready && <p role="status" data-testid="claude-needs-docker">Claude needs Docker on this computer for now. Install and start Docker Desktop or Docker Engine, then <button className="underline" onClick={() => void act(refresh)}>check again</button>.</p>}
       <section className="flex flex-wrap items-center gap-3 rounded border p-3" aria-label="Session controls">
         <select aria-label="Claude session" value={selected ?? ""} onChange={e => { setSession(undefined); setEvents([]); setSelected(e.target.value || undefined); }} className="max-w-64 rounded border bg-background p-2"><option value="">Choose a session</option>{sessions.map(item => <option key={item.id} value={item.id}>{new Date(item.createdAt).toLocaleString()} · {item.id.slice(0,8)}</option>)}</select>
+        {surface === "full" && models.length > 1 && <select aria-label="Claude model" value={model} onChange={e => setModel(e.target.value)} className="rounded border bg-background p-2">{models.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select>}
         {surface === "full" && <><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />Retain private traces and full project snapshots</label>
-        <Button disabled={!allowed || !ready || busy || !consent} onClick={() => void act(async () => { setNotice("Preparing the sandbox and copying your project. The first setup may take several minutes."); const created = await request<Session>("sessions", {captureConsent: true}); await refresh(); setSelected(created.id); setNotice("Sandbox ready. Changes stay in this session’s project copy."); })}>New Claude session</Button></>}
+        <Button disabled={!allowed || !ready || busy || !consent} onClick={() => void act(async () => { setNotice("Preparing the sandbox and copying your project. The first setup may take several minutes."); const created = await request<Session>("sessions", {captureConsent: true, ...(model ? {model} : {})}); await refresh(); setSelected(created.id); setNotice("Sandbox ready. Changes stay in this session’s project copy."); })}>New Claude session</Button></>}
       </section>
       {session && <>
         <div className="space-y-1 text-sm" aria-label="Fixed session model">

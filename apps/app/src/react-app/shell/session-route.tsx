@@ -142,6 +142,8 @@ import { useSessionFindStore } from "@/react-app/domains/session/surface/find-st
 import { useModelPicker } from "@/react-app/domains/session/modals/use-model-picker";
 import { getSessionModelSelection, resolveSendVariant, useSessionModelStore } from "@/react-app/domains/session/surface/session-model-store";
 import { chatStarted, markChatStarted, useProjectModelModes } from "@/react-app/domains/session/surface/model-modes";
+import { claudeModelName, claudeModelOptions, decideModelPick, isClaudeModel, newChatPrompt, setUpClaudeSandbox, useClaudeModels, useClaudeModelSync, useModelPickGate } from "@/react-app/domains/session/surface/claude-models";
+import { ConfirmModal } from "@/react-app/design-system/modals/confirm-modal";
 import { useWorkbenchStore } from "@/react-app/domains/session/chat/workbench-store";
 import { resolveWorkbenchPaneEndpoint } from "@/react-app/domains/session/chat/pane-runtime";
 import {
@@ -1001,6 +1003,7 @@ export function SessionRoute() {
   const modelModes = useProjectModelModes(selectedWorkspaceEndpoint?.client ?? null, selectedWorkspaceEndpoint?.workspaceId ?? null, selectedSessionId || null);
   const modelModesRef = useRef(modelModes);
   modelModesRef.current = modelModes;
+  useClaudeModelSync(selectedWorkspaceEndpoint?.client ?? null, selectedWorkspaceEndpoint?.workspaceId ?? null);
   // The default as this project may use it: one its mode does not allow moves to the allowed default.
   const projectDefaultModel = modelModes.fallback(local.prefs.defaultModel ?? null) ?? local.prefs.defaultModel ?? null;
   /**
@@ -2838,18 +2841,64 @@ export function SessionRoute() {
       })()
     : modelVariantValue;
 
+  // Every list the route shows: the project's allowed models and Claude (listed everywhere).
+  const claudeCatalog = useClaudeModels((state) => state.catalog);
+  const pickerOptions = useMemo(
+    () => [...modelPicker.options.filter((option) => modelModes.allowsNew(option)), ...claudeModelOptions({ catalog: claudeCatalog })],
+    [claudeCatalog, modelModes, modelPicker.options],
+  );
+  // A pick the picker should not just switch to (claude-models.ts decideModelPick).
+  const [newChatOffer, setNewChatOffer] = useState<{ next: ModelRef; current: ModelRef } | null>(null);
+  const modelTitle = (ref: ModelRef) => isClaudeModel(ref)
+    ? claudeModelName(useClaudeModels.getState(), ref.modelID)
+    : modelPicker.options.find((option) => option.providerID === ref.providerID && option.modelID === ref.modelID)?.title ?? resolveModelDisplayName(ref.modelID);
+  /** Claude: set the project's sandbox up (as the required sandbox does) and open a Claude chat on `model`. */
+  const openClaudeChat = (model: ModelRef) => {
+    const endpoint = selectedWorkspaceEndpoint;
+    if (!selectedWorkspaceId) return;
+    if (endpoint?.client) {
+      void setUpClaudeSandbox(endpoint.client, endpoint.workspaceId).catch(() => {
+        toast.error("The sandbox could not be set up for Claude. Check Settings > General > Sandbox.", { id: "claude-sandbox" });
+      });
+    }
+    navigate(`/workspace/${encodeURIComponent(selectedWorkspaceId)}/claude?model=${encodeURIComponent(model.modelID)}`);
+  };
+  const handleModelPick = (next: ModelRef, sessionId: string | null): boolean => {
+    const current = sessionId ? getSessionModelSelection(sessionId)?.model ?? null : null;
+    const pick = decideModelPick({ next, current, started: Boolean(sessionId && chatStarted(sessionId)), claude: useClaudeModels.getState() });
+    if (pick.kind === "unavailable") toast(pick.message, { id: `claude-unavailable:${next.modelID}` });
+    else if (pick.kind === "new_chat" && current) setNewChatOffer({ next, current });
+    else if (pick.kind === "claude") openClaudeChat(next);
+    return pick.kind !== "switch" && pick.kind !== "same";
+  };
+  const modelPickRef = useRef(handleModelPick);
+  modelPickRef.current = handleModelPick;
+  useEffect(() => {
+    useModelPickGate.setState({ intercept: (next, sessionId) => modelPickRef.current(next, sessionId) });
+    return () => useModelPickGate.setState({ intercept: () => false });
+  }, []);
+  const confirmNewChat = async () => {
+    const offer = newChatOffer;
+    setNewChatOffer(null);
+    if (!offer || !selectedWorkspaceId) return;
+    if (isClaudeModel(offer.next)) {
+      openClaudeChat(offer.next);
+      return;
+    }
+    const sessionId = await handleCreateTaskInWorkspace(selectedWorkspaceId);
+    if (!sessionId) return;
+    useSessionModelStore.getState().setModel(sessionId, offer.next, null);
+    local.setPrefs((previous) => ({ ...previous, defaultModel: offer.next, modelVariant: null }));
+  };
+
   const applySessionRouteModelSelection = useCallback((
     next: ModelRef,
     targetSessionId: string | null,
     behavior?: { value: string | null },
   ) => {
     const explicitBehavior = behavior !== undefined;
-    // One model per chat: a chat that sent a prompt keeps its model.
-    const fixed = targetSessionId && chatStarted(targetSessionId) ? getSessionModelSelection(targetSessionId)?.model : null;
-    if (fixed && (fixed.providerID !== next.providerID || fixed.modelID !== next.modelID)) {
-      toast(modelModesRef.current.fixedNote(fixed, next), { id: `model-fixed:${targetSessionId}` });
-      return;
-    }
+    // One model per chat (a started chat offers a new one), and Claude opens its own chat.
+    if (modelPickRef.current(next, targetSessionId)) return;
     useModelCollectionsStore.getState().recordRecent(next);
     if (targetSessionId) {
       const sessionStore = useSessionModelStore.getState();
@@ -4051,6 +4100,15 @@ export function SessionRoute() {
       extensionsActive={extensionsMainOpen}
       onAccessibleTargetsChange={setPaletteAccessibleTargets}
     />
+    <ConfirmModal
+      open={newChatOffer !== null}
+      title={newChatOffer ? newChatPrompt(modelTitle(newChatOffer.current), modelTitle(newChatOffer.next)).title : ""}
+      message={newChatOffer ? newChatPrompt(modelTitle(newChatOffer.current), modelTitle(newChatOffer.next)).message : ""}
+      confirmLabel="Start new chat"
+      cancelLabel="Keep this chat"
+      onConfirm={() => void confirmNewChat()}
+      onCancel={() => setNewChatOffer(null)}
+    />
     <CreateWorkspaceModal
       open={createWorkspaceOpen}
       onClose={() => {
@@ -4131,7 +4189,7 @@ export function SessionRoute() {
       onOpenAutomations={() => navigate(automationsRoute())}
       onOpenDashboard={() => navigate(dashboardRoute())}
       onCreateWorkspace={handleOpenCreateWorkspace}
-      modelOptions={modelPicker.options.filter((option) => modelModes.allowsNew(option))}
+      modelOptions={pickerOptions}
       selectedModel={paletteSelectedModel}
       selectedModelBehavior={paletteSelectedModelBehavior}
       onSelectModel={(next, behavior) => {
@@ -4172,7 +4230,7 @@ export function SessionRoute() {
     />
     <ModelPickerModal
       open={modelPicker.open}
-      options={modelPicker.options.filter((option) => modelModes.allowsNew(option))}
+      options={pickerOptions}
       organizationModelsEmpty={organizationModelsEmpty}
       organizationModelsSettingsUrl={organizationModelsSettingsUrl}
 

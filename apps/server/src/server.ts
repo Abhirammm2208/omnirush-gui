@@ -1541,14 +1541,20 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     bestPracticesReloads,
   );
 
+  // Claude Code drives docker itself: the box backend's Docker engine when it is one, else `docker` on PATH.
+  let claudeDocker: string | undefined;
   const claudeRuntime = new ClaudeRuntime({
+    get docker() { return claudeDocker; },
     directory: join(runtimeStorageDir(config), "claude-sessions"), surface: "gui", fetch: externalFetch,
     access: () => gatewayBroker.claudeAccess(),
     authorize: context => gatewayBroker.claudeGrant(context),
     revoke: context => gatewayBroker.revokeClaudeGrant(context),
   });
   registerClaudeRoutes({routes, runtime: claudeRuntime,
-    workspace: ctx => resolveWorkspaceWithoutBootstrap(config, ctx.params.id),
+    workspace: async ctx => {
+      claudeDocker = (await boxServiceFor(config).dockerCli().catch(() => null)) ?? undefined;
+      return resolveWorkspaceWithoutBootstrap(config, ctx.params.id);
+    },
     owner: ctx => requireClientScope(ctx, "owner"),
     writable: () => ensureWritable(config),
     upload: id => uploadClaudeSession(claudeRuntime, id, (owner, route, init) => gatewayBroker.nativeCaptureRequest(owner, route, init), owner => {

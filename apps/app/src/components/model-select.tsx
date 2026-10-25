@@ -61,6 +61,7 @@ import {
 } from "@/app/utils";
 import { isSupportedModelProvider, providerCatalogRank } from "@/app/lib/provider-catalog";
 import { useModelModeFilter } from "@/react-app/domains/session/surface/model-modes";
+import { claudeModelOptions, useClaudeModels, useModelPickGate } from "@/react-app/domains/session/surface/claude-models";
 
 function getProviderDisplayName(providerId: string) {
   return providerId
@@ -265,7 +266,12 @@ export function ModelSelect({
   // Only the models the open project's mode allows (sandbox or not: model-modes.ts).
   const modeAllows = useModelModeFilter((state) => state.allows);
   const allOptions = useModelOptions(open, fallbackOptions, denAuth.isSignedIn);
-  const catalogOptions = React.useMemo(() => allOptions.filter((option) => modeAllows(option)), [allOptions, modeAllows]);
+  // Claude is listed in every project: picking it sets the project's sandbox up (claude-models.ts).
+  const claudeCatalog = useClaudeModels((state) => state.catalog);
+  const catalogOptions = React.useMemo(
+    () => [...allOptions.filter((option) => modeAllows(option)), ...claudeModelOptions({ catalog: claudeCatalog })],
+    [allOptions, claudeCatalog, modeAllows],
+  );
   const modelOptions = React.useMemo(
     () => dedupeModelOptions(
       overlaySelectedBehavior(
@@ -379,8 +385,17 @@ export function ModelSelect({
     && Boolean(effectiveBehaviorLabel);
 
   const applyModel = (option: ModelOption, behavior?: string | null) => {
+    const next = { providerID: option.providerID, modelID: option.modelID };
+    // The route may take the pick instead (a new-chat popup, Claude, a message).
+    if (useModelPickGate.getState().intercept(next, sessionId ?? null)) {
+      setSearch("");
+      setThinkingFor(null);
+      setPane("root");
+      onOpenChange(false);
+      return;
+    }
     useModelCollectionsStore.getState().recordRecent(option);
-    onChange({ providerID: option.providerID, modelID: option.modelID }, behavior);
+    onChange(next, behavior);
     if (behavior !== undefined) {
       onBehaviorChange?.(behavior);
     }
