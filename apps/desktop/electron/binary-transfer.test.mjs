@@ -64,6 +64,7 @@ test("Claude archive conflict preserves the safe response body without creating 
       },
     });
     assert.equal(result.status, 409);
+    assert.ok("body" in result);
     assert.equal(result.body, body);
     assert.equal(result.path, null);
     assert.equal(result.bytes, 0);
