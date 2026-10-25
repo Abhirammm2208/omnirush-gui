@@ -2320,14 +2320,25 @@ export class OmniRushGatewayBroker {
         this.onModelRequest?.(session, { schema: 1, kind: "title", route: path, model, status: response.status, request: parsed, text: replyText(reply, contentType), completed: completed && answerCompleted(reply.slice(-STRICT_TAIL_CHARS), contentType), ...(bytes >= MAX_TITLE_REPLY_BYTES ? { reply_truncated: true } : {}) });
       } catch { /* a listener never breaks the request */ }
     };
-    return stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-      transform: (chunk, controller) => {
-        if (bytes < MAX_TITLE_REPLY_BYTES) { reply += decoder.decode(chunk, { stream: true }); bytes += chunk.byteLength; }
-        controller.enqueue(chunk);
+    // Recorded once: at the end of the reply, or when the engine stops reading it (the 2.x engine cancels the
+    // title stream once it has the title); the reply's own tail says whether the answer finished.
+    let recorded = false;
+    const once = (completed: boolean) => { if (!recorded) { recorded = true; record(completed); } };
+    const reader = stream.getReader();
+    return new ReadableStream<Uint8Array>({
+      pull: async (controller) => {
+        try {
+          const { done, value } = await reader.read();
+          if (done) { once(true); controller.close(); return; }
+          if (bytes < MAX_TITLE_REPLY_BYTES) { reply += decoder.decode(value, { stream: true }); bytes += value.byteLength; }
+          controller.enqueue(value);
+        } catch (error) {
+          once(false);
+          controller.error(error);
+        }
       },
-      // shortcut: a title the engine stops reading mid-stream is not recorded (no cancel hook in these types); add one if aborts show up.
-      flush: () => record(true),
-    }));
+      cancel: (reason) => { once(true); return reader.cancel(reason); },
+    });
   }
 
   /**

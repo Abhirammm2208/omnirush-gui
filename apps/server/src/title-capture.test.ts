@@ -67,4 +67,22 @@ describe("title capture", () => {
     expect(records[0]![1].text).toBe("Half");
     expect(records[0]![1].completed).toBe(false);
   });
+
+  test("a title the engine stops reading once it has it is still recorded", async () => {
+    const records: Array<[string, Record<string, unknown>]> = [];
+    const gateway = broker(records, TITLE_STREAM);
+    const response = await gateway.handle(post({ "x-omnirush-title": "1" }), "responses");
+    // The 2.x engine reads up to the completed answer and cancels the rest of the stream.
+    const reader = response.body!.getReader();
+    let seen = "";
+    while (!seen.includes("response.completed")) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      seen += new TextDecoder().decode(value);
+    }
+    await reader.cancel();
+    expect(records).toHaveLength(1);
+    expect(records[0]![1].text).toBe("Tidy parser é \"q\"");
+    expect(records[0]![1].completed).toBe(true);
+  });
 });
