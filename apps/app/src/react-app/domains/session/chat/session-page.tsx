@@ -108,11 +108,11 @@ import { useWorkbenchStore, type WorkbenchSessionTab } from "./workbench-store";
 import { isSameWorkbenchSession } from "./workbench-store";
 import { ReactSessionRuntime } from "../sync/runtime-sync";
 import { useSessionInteractions } from "../sync/use-session-interactions";
-import { createClient } from "@/app/lib/opencode";
+
 import type { Client } from "@/app/types";
 import { createQuitGuard, finishGuardKey, leavingRunningTurn, type FinishGuardKind } from "@/app/lib/good-session";
 import { FinishGuardDialog, TurnGuardDialog, finishGuardFor, requestFinishIt } from "@/react-app/domains/quality/good-session";
-import { createClientV2, isOpencodeV2BaseUrl } from "@/app/lib/opencode-v2-adapter";
+import { createClientV2 } from "@/app/lib/opencode-v2-adapter";
 import {
   availableNarrowPane,
   NarrowPaneSwitcher,
@@ -359,9 +359,7 @@ function WorkbenchPaneHeader(props: {
 
 /** Every visible conversation owns its pending interactions, including the side pane. */
 function SplitSessionSurface(props: SessionSurfaceProps) {
-  const client = useMemo(() => isOpencodeV2BaseUrl(props.opencodeBaseUrl)
-    ? createClientV2(props.opencodeBaseUrl, props.workspaceRoot, { token: props.omnirushToken })
-    : createClient(props.opencodeBaseUrl, props.workspaceRoot, { token: props.omnirushToken, mode: "omnirush" }),
+  const client = useMemo(() => createClientV2(props.opencodeBaseUrl, props.workspaceRoot, { token: props.omnirushToken }),
   [props.opencodeBaseUrl, props.omnirushToken, props.workspaceRoot]);
   const interactions = useSessionInteractions({
     client, workspaceId: props.workspaceId, sessionId: props.sessionId, workspaceRoot: props.workspaceRoot ?? "",

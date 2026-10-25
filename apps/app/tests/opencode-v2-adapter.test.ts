@@ -1712,6 +1712,9 @@ describe("v2 question forms", () => {
       expect(requests.map((item) => item.method)).toEqual(["POST", "PUT", "POST"]);
       expect(requests[1]).toMatchObject({ path: "/opencode2/api/experimental/session/ses_side/instructions/entries/omnirush-context", body: { value: parameters.system } });
       expect(requests[2]?.body).toEqual({ text: "What is happening?" });
+      requests.length = 0;
+      await client.session.promptAsync({ ...parameters, messageID: "msg_0123456789abUIdraft00000" });
+      expect(requests[2]?.body).toEqual({ text: "What is happening?", id: "msg_0123456789abUIdraft00000" });
       requests.length = 0; status = 503;
       expect((await client.session.promptAsync(parameters)).response.status).toBe(503);
       expect(requests.map((item) => item.method)).toEqual(["POST", "PUT"]);
@@ -1867,4 +1870,66 @@ test("MCP status from the 2.x engine reads as the 1.x status map", async () => {
   expect(v2McpStatusMap({ data: [{ name: "memory", status: { status: "connected" } }, { name: "gh", status: { status: "failed", error: "boom" } }, { name: 3 }] }))
     .toEqual({ memory: { status: "connected" }, gh: { status: "failed", error: "boom" } });
   expect(v2McpStatusMap(null)).toEqual({});
+});
+
+describe("OpenCode 2.0.32 workspace reads", () => {
+  test("agents, commands, files, vcs, projects and diffs read native routes in the 1.x shapes", async () => {
+    const originalFetch = globalThis.fetch;
+    const paths: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      const path = url.pathname.replace("/opencode2", "") + url.search;
+      paths.push(`${request.method} ${path}`);
+      if (url.pathname.endsWith("/api/agent")) return Response.json({ data: [
+        { id: "build", name: "Build", mode: "primary", hidden: false, permissions: [], request: {}, description: "Default", model: { id: "m1", providerID: "mock" } },
+        { id: "compaction", name: "Compaction", mode: "primary", hidden: true, permissions: [], request: {} },
+      ] });
+      if (url.pathname.endsWith("/api/command")) return Response.json({ data: [{ name: "init" }] });
+      if (url.pathname.endsWith("/api/fs/find")) return Response.json({ data: [{ path: "/", type: "directory" }, { path: "src/", type: "directory" }, { path: "src/a.ts", type: "file" }] });
+      if (url.pathname.endsWith("/api/vcs")) return Response.json({ data: { provider: "git", branch: { current: "feat", default: "main" } } });
+      if (url.pathname.endsWith("/api/vcs/diff")) return Response.json({ data: [{ file: "a.ts", patch: "p", additions: 1, deletions: 0, status: "modified" }] });
+      if (url.pathname.endsWith("/api/project")) return Response.json([{ id: "prj", canonical: "/workspace", time: { created: 1, updated: 1, active: 1 }, sandboxes: [] }]);
+      if (url.pathname.endsWith("/api/location")) return Response.json({ directory: "/workspace/sub", project: { id: "prj", directory: "/workspace", canonical: "/workspace" } });
+      if (url.pathname.endsWith("/diff")) return Response.json({ data: [{ file: "b.ts", patch: "q", additions: 0, deletions: 1, status: "deleted" }] });
+      throw new Error(`Unexpected request: ${request.method} ${path}`);
+    };
+    try {
+      const client = createClientV2("http://owner.test/opencode2", "/workspace", {});
+      expect((await client.app.agents()).data).toEqual([
+        { name: "build", mode: "primary", hidden: false, permission: [], options: {}, description: "Default", model: { providerID: "mock", modelID: "m1" } },
+        { name: "compaction", mode: "primary", hidden: true, permission: [], options: {} },
+      ]);
+      expect((await client.command.list()).data).toEqual([{ name: "init", template: "", hints: [] }]);
+      expect((await client.find.files({ query: "a", dirs: "true", limit: 50 })).data).toEqual(["src/", "src/a.ts"]);
+      expect((await client.vcs.get()).data).toEqual({ branch: "feat", default_branch: "main" });
+      expect((await client.vcs.diff({ mode: "git" })).data).toMatchObject([{ file: "a.ts", status: "modified" }]);
+      expect((await client.project.list()).data).toMatchObject([{ id: "prj", worktree: "/workspace" }]);
+      expect((await client.project.current()).data).toMatchObject({ id: "prj", worktree: "/workspace" });
+      expect((await client.path.get()).data).toEqual({ home: "", state: "", config: "", worktree: "/workspace", directory: "/workspace/sub" });
+      expect((await client.session.diff({ sessionID: "ses_main", messageID: "msg_user" })).data).toMatchObject([{ file: "b.ts" }]);
+      expect((await client.lsp.status()).data).toEqual([]);
+      expect((await client.provider.auth()).data).toEqual({});
+      expect(paths).toEqual([
+        "GET /api/agent", "GET /api/command", "GET /api/fs/find?query=a&limit=50", "GET /api/vcs",
+        "GET /api/vcs/diff?mode=working", "GET /api/project", "GET /api/location", "GET /api/location",
+        "GET /api/session/ses_main/diff?from=msg_user",
+      ]);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  test("1.x calls the adapter does not port fail locally and never reach the engine", async () => {
+    const originalFetch = globalThis.fetch;
+    let reached = 0;
+    globalThis.fetch = async () => { reached += 1; return new Response(null, { status: 204 }); };
+    try {
+      const client = createClientV2("http://owner.test/workspace/w/opencode2", "/workspace", {});
+      const update = await client.config.update({ config: {} });
+      expect(update.response?.status).toBe(501);
+      expect(update.error).toMatchObject({ name: "UnsupportedInV2", message: "Not available on the OpenCode 2.x engine: /config" });
+      expect((await client.mcp.connect({ name: "x" })).response?.status).toBe(501);
+      expect((await client.instance.dispose()).response?.status).toBe(501);
+      expect(reached).toBe(0);
+    } finally { globalThis.fetch = originalFetch; }
+  });
 });

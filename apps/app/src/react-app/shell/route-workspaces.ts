@@ -5,8 +5,8 @@
 
 import type { Session } from "@opencode-ai/sdk/v2/client";
 
-import { createClient, unwrap } from "@/app/lib/opencode";
-import { createClientV2, isOpencodeV2BaseUrl } from "@/app/lib/opencode-v2-adapter";
+import { unwrap } from "@/app/lib/opencode";
+import { createClientV2 } from "@/app/lib/opencode-v2-adapter";
 import { deleteNativeSession, unwrapNativeSessionResult } from "@/app/lib/opencode-session-native";
 import { OmniRushServerError, type OmniRushWorkspaceInfo } from "@/app/lib/omnirush-server";
 import type { ResolvedWorkspaceEndpoint } from "@/app/lib/workspace-endpoint";
@@ -44,10 +44,7 @@ export type RouteSessionListTransport = (input: {
 }) => Promise<RouteSessionListResult>;
 
 const nativeRouteSessionList: RouteSessionListTransport = async ({ endpoint, limit }) => {
-  const client = createClient(endpoint.opencodeBaseUrl, undefined, {
-    mode: "omnirush",
-    token: endpoint.token,
-  });
+  const client = createClientV2(endpoint.opencodeBaseUrl, undefined, { token: endpoint.token });
   // The engine's /session list only returns sessions filed under the folder's
   // current project id, which changes when an agent turns the folder into a
   // git repo or adds a remote, and it matches the folder byte for byte. The
@@ -105,9 +102,7 @@ async function routeSessionEndpoint(endpoint: ResolvedWorkspaceEndpoint): Promis
 
 export async function createRouteSession(endpoint: ResolvedWorkspaceEndpoint, directory?: string): Promise<Session> {
   const native = await routeSessionEndpoint(endpoint);
-  const client = isOpencodeV2BaseUrl(native.opencodeBaseUrl)
-    ? createClientV2(native.opencodeBaseUrl, directory, { token: native.token })
-    : createClient(native.opencodeBaseUrl, directory, { token: native.token, mode: "omnirush" });
+  const client = createClientV2(native.opencodeBaseUrl, directory, { token: native.token });
   return unwrap(await client.session.create({ directory }));
 }
 

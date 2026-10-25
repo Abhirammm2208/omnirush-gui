@@ -27,7 +27,7 @@ describe("workspace route native session lists", () => {
       { id: "ses_local", directory: "/tmp/local" },
     ]);
     expect(inputs).toEqual([{ endpoint, limit: 200 }]);
-    expect(endpoint.opencodeBaseUrl).toBe("https://local.example.test/workspace/local%20workspace/opencode");
+    expect(endpoint.opencodeBaseUrl).toBe("https://local.example.test/workspace/local%20workspace/opencode2");
     expect(endpoint.token).toBe("local-token");
   });
 
@@ -112,7 +112,7 @@ describe("workspace route native session lists", () => {
       { endpoint, limit: 200 },
       { endpoint, limit: 200 },
     ]);
-    expect(endpoint.opencodeBaseUrl).toBe("https://remote.example.test/worker/workspace/server%2Fid/opencode");
+    expect(endpoint.opencodeBaseUrl).toBe("https://remote.example.test/worker/workspace/server%2Fid/opencode2");
     expect(endpoint.token).toBe("remote-token");
   });
 });

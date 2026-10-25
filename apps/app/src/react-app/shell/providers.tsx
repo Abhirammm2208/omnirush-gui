@@ -34,11 +34,11 @@ function resolveDefaultServerUrl(): string {
       ? import.meta.env.VITE_OMNIRUSH_URL.trim()
       : "";
   if (omnirushUrl) {
-    return `${omnirushUrl.replace(/\/+$/, "")}/opencode`;
+    return `${omnirushUrl.replace(/\/+$/, "")}/opencode2`;
   }
 
   if (isWebDeployment() && import.meta.env.PROD && typeof window !== "undefined") {
-    return `${window.location.origin}/opencode`;
+    return `${window.location.origin}/opencode2`;
   }
 
   const envUrl =

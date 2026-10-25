@@ -11,7 +11,8 @@ import {
   resolveOmniRushExtensionCatalogPlatform,
 } from "@/app/constants";
 import type { EnablementContext } from "@/app/enablement";
-import { createClient, unwrap } from "@/app/lib/opencode";
+import { unwrap } from "@/app/lib/opencode";
+import { createClientV2 } from "@/app/lib/opencode-v2-adapter";
 import {
   createOmniRushServerClient,
   isLoopbackOmniRushServerUrl,
@@ -1009,13 +1010,10 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
 
   const opencodeClient = useMemo(() => {
     if (!selectedWorkspaceEndpoint || !selectedWorkspaceEndpoint.token) return null;
-    return createClient(
+    return createClientV2(
       selectedWorkspaceEndpoint.opencodeBaseUrl,
       selectedWorkspaceRoot || undefined,
-      {
-        token: selectedWorkspaceEndpoint.token,
-        mode: "omnirush",
-      },
+      { token: selectedWorkspaceEndpoint.token },
     );
   }, [selectedWorkspaceEndpoint, selectedWorkspaceRoot]);
 

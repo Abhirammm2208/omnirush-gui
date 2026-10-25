@@ -3,10 +3,10 @@ import type { SessionStatus } from "@opencode-ai/sdk/v2/client";
 import { draftHasLostPaste } from "../surface/composer/pasted-text";
 import { isSessionReverted } from "./reverted-sessions";
 import { markTaskRunStart } from "@/app/lib/analytics";
-import { createClient, createPromptMessageID, hasAcceptedPromptMessage, isPromptAdmissionUnknown, isSendStopped } from "@/app/lib/opencode";
+import { createPromptMessageID, hasAcceptedPromptMessage, isPromptAdmissionUnknown, isSendStopped } from "@/app/lib/opencode";
 import { shellInSession } from "@/app/lib/opencode-session";
 import { submitAfterInterruption } from "@/app/lib/opencode-interruption";
-import { createClientV2, isOpencodeV2BaseUrl } from "@/app/lib/opencode-v2-adapter";
+import { createClientV2 } from "@/app/lib/opencode-v2-adapter";
 import { composeNativeSessionSnapshot } from "@/app/lib/opencode-session-native";
 import type { ComposerDraft, ModelRef } from "@/app/types";
 import { readStoredDefaultModel } from "@/react-app/kernel/model-config";
@@ -106,11 +106,10 @@ async function performQueuedDraftSend(
   const sendModel = sessionModelSelection?.model ?? readStoredDefaultModelSafely() ?? context.model;
   // The effort the picker shows for this model, never a null it hides.
   const sendVariant = resolveSendVariant(sendModel, sessionModelSelection ? sessionModelSelection.variant : context.variant);
-  const createEngineClient = isOpencodeV2BaseUrl(context.opencodeBaseUrl) ? createClientV2 : createClient;
-  const opencodeClient = createEngineClient(
+  const opencodeClient = createClientV2(
     context.opencodeBaseUrl,
     context.workspaceRoot || undefined,
-    { token: context.omnirushToken, mode: "omnirush" },
+    { token: context.omnirushToken },
   );
 
   if (draft.mode === "shell") {
@@ -198,8 +197,8 @@ function armObservationProbe(watched: WatchedSession) {
     void (async () => {
       const phase = getQueuedDrainState(watched.sessionId).phase;
       if (phase.kind === "admission_unknown") {
-        const client = createClient(watched.context.opencodeBaseUrl, watched.context.workspaceRoot || undefined, {
-          token: watched.context.omnirushToken, mode: "omnirush",
+        const client = createClientV2(watched.context.opencodeBaseUrl, watched.context.workspaceRoot || undefined, {
+          token: watched.context.omnirushToken,
         });
         if (await hasAcceptedPromptMessage(client, watched.sessionId, phase.messageID)) {
           if (watchedSessions.get(watched.sessionId) !== watched) return;

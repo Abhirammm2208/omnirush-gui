@@ -3,7 +3,7 @@ import type { QueryKey } from "@tanstack/react-query";
 
 import { toast } from "@/components/ui/sonner";
 import { createClient, unwrap } from "@/app/lib/opencode";
-import { createClientV2, isOpencodeV2BaseUrl } from "@/app/lib/opencode-v2-adapter";
+import { createClientV2 } from "@/app/lib/opencode-v2-adapter";
 import { abortSessionSafe, revertSession, unrevertSession } from "@/app/lib/opencode-session";
 import type { OmniRushSessionMessage, OmniRushSessionSnapshot } from "@/app/lib/omnirush-server";
 import { getReactQueryClient } from "@/react-app/infra/query-client";
@@ -39,9 +39,7 @@ export function useCachedQueryData<T>(queryKey: QueryKey): T | undefined {
 
 export function useOpencodeClient(target: Pick<SessionCommandTarget, "opencodeBaseUrl" | "token" | "workspaceRoot">): OpencodeClient {
   return useMemo(
-    () => isOpencodeV2BaseUrl(target.opencodeBaseUrl)
-      ? createClientV2(target.opencodeBaseUrl, target.workspaceRoot || undefined, { token: target.token })
-      : createClient(target.opencodeBaseUrl, target.workspaceRoot.trim() || undefined, { token: target.token, mode: "omnirush" }),
+    () => createClientV2(target.opencodeBaseUrl, target.workspaceRoot || undefined, { token: target.token }),
     [target.opencodeBaseUrl, target.token, target.workspaceRoot],
   );
 }

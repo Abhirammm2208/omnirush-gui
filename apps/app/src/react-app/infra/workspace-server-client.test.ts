@@ -40,7 +40,7 @@ describe("workspace server client primitive", () => {
     expect(first.baseUrl).toBe("http://127.0.0.1:4096");
     expect(first.token).toBe("local-token");
     expect(first.workspaceId).toBe("local-alpha");
-    expect(first.opencodeBaseUrl).toBe("http://127.0.0.1:4096/workspace/local-alpha/opencode");
+    expect(first.opencodeBaseUrl).toBe("http://127.0.0.1:4096/workspace/local-alpha/opencode2");
   });
 
   test("changed local credentials produce a distinct endpoint and client", () => {
@@ -84,7 +84,7 @@ describe("workspace server client primitive", () => {
     expect(endpoint.baseUrl).toBe("https://worker.example.test");
     expect(endpoint.token).toBe("remote-token");
     expect(endpoint.workspaceId).toBe("server-workspace-id");
-    expect(endpoint.opencodeBaseUrl).toBe("https://worker.example.test/workspace/server-workspace-id/opencode");
+    expect(endpoint.opencodeBaseUrl).toBe("https://worker.example.test/workspace/server-workspace-id/opencode2");
   });
 
   test("keeps resolver caches scoped instead of leaking a global singleton", () => {

@@ -123,7 +123,7 @@ test("composer focus and optimistic sends preserve drafts through snapshots and 
     if (new URL(request.url).pathname.includes(`/session/${sessionId}/message/`)) {
       acceptanceRequests.push(request);
       return acceptedMessageId
-        ? Response.json({ info: { id: acceptedMessageId, sessionID: sessionId, role: "user" }, parts: [] })
+        ? Response.json({ data: { id: acceptedMessageId, sessionID: sessionId, type: "user", text: "Uncertain send", time: { created: 1 } } })
         : new Response(null, { status: 404 });
     }
     return Response.json({});
@@ -368,8 +368,8 @@ test("composer focus and optimistic sends preserve drafts through snapshots and 
     expect(getQueuedDrainState(sessionId).phase.kind).toBe("awaiting_observation");
     for (const request of acceptanceRequests) {
       expect(request.method).toBe("GET");
-      expect(new URL(request.url).pathname).toBe(`/opencode/session/${sessionId}/message/${uncertainId}`);
-      expect(new URL(request.url).searchParams.get("directory")).toBe("/tmp/project-focus-continuity");
+      // The acceptance check reads the 2.x message route; this surface keeps exact-id matching (no same-text fallback).
+      expect(new URL(request.url).pathname).toBe(`/opencode/api/session/${sessionId}/message/${uncertainId}`);
     }
     expect(acceptanceRequests).toHaveLength(2);
     await act(async () => queryClient.setQueryData(transcriptKey(workspaceId, sessionId), [{

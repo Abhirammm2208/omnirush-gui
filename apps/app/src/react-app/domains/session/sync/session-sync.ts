@@ -9,7 +9,7 @@ import { captureAnalyticsEvent, takeTaskRunStart } from "@/app/lib/analytics";
 import { gatewayRefusalEvent } from "@/app/lib/gateway-refusal";
 import { trackTaskCompleted, trackTaskFailed } from "@/app/lib/den-telemetry";
 import { observeModelsTaskEvent } from "@/app/lib/models-task-analytics";
-import { createClient, unwrap } from "@/app/lib/opencode";
+import { unwrap } from "@/app/lib/opencode";
 import { createClientV2, isOpencodeV2BaseUrl } from "@/app/lib/opencode-v2-adapter";
 import { perfNow, recordPerfLog } from "@/app/lib/perf-log";
 import { isGeneratedSessionTitle } from "@/app/lib/session-title";
@@ -190,9 +190,7 @@ type SessionStatusFetcher = (
 ) => Promise<Record<string, SessionStatus>>;
 
 function createSyncClient(baseUrl: string, omnirushToken: string) {
-  return isOpencodeV2BaseUrl(baseUrl)
-    ? createClientV2(baseUrl, undefined, { token: omnirushToken })
-    : createClient(baseUrl, undefined, { token: omnirushToken, mode: "omnirush" });
+  return createClientV2(baseUrl, undefined, { token: omnirushToken });
 }
 
 const defaultSyncSubscriptionFactory: SyncSubscriptionFactory = async (baseUrl, omnirushToken, signal) => {

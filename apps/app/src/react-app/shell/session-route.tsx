@@ -23,7 +23,7 @@ import { buildDiagnosticsBundleJson } from "@/app/lib/diagnostics-bundle";
 import { downloadTextAsFile } from "@/app/lib/download";
 import { canCreateWorkspaces } from "@/app/lib/workspace-creation-policy";
 import { useQueryClient } from "@tanstack/react-query";
-import { createClient, isPromptAdmissionUnknown, unwrap } from "@/app/lib/opencode";
+import { isPromptAdmissionUnknown, unwrap } from "@/app/lib/opencode";
 import { createClientV2, isOpencodeV2BaseUrl, V2_SESSION_ARCHIVE_UNAVAILABLE } from "@/app/lib/opencode-v2-adapter";
 import { abortSessionSafe, forkSession, listCommands, revertSession, setSessionArchived, shellInSession, unrevertSession } from "@/app/lib/opencode-session";
 import { getNativeSessionMessages } from "@/app/lib/opencode-session-native";
@@ -1773,11 +1773,10 @@ export function SessionRoute() {
     }
 
     const workspaceRoot = paneEndpoint.workspaceRoot;
-    const createEngineClient = isOpencodeV2BaseUrl(endpoint.opencodeBaseUrl) ? createClientV2 : createClient;
-    const workspaceOpencodeClient = createEngineClient(
+    const workspaceOpencodeClient = createClientV2(
       endpoint.opencodeBaseUrl,
       workspaceRoot || undefined,
-      { token: endpoint.token, mode: "omnirush" },
+      { token: endpoint.token },
     );
     const scopedSurface = {
       ...surfaceProps,
@@ -3421,8 +3420,7 @@ export function SessionRoute() {
     await refreshRouteState();
     void queryClient.invalidateQueries({ queryKey: workspaceTasksQueryKey(workspaceId) });
     const opencodeUrl = `${(buildOmniRushWorkspaceBaseUrl(baseUrl, taskWorkspace.id) ?? baseUrl).replace(/\/+$/, "")}/opencode2`;
-    const createEngineClient = isOpencodeV2BaseUrl(opencodeUrl) ? createClientV2 : createClient;
-    const engine = createEngineClient(opencodeUrl, taskWorkspace.path || undefined, { token, mode: "omnirush" });
+    const engine = createClientV2(opencodeUrl, taskWorkspace.path || undefined, { token });
     const session = unwrap(await engine.session.create({ directory: taskWorkspace.path || undefined }));
     const system = await buildOmniRushSessionSystemContext(client, {
       workspaceId: taskWorkspace.id,

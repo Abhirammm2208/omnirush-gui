@@ -14,6 +14,7 @@ import type {
   ToolPart,
   UnknownError,
 } from "@opencode-ai/sdk/v2/client";
+import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 
 import { createClient, createDesktopFetch, type FieldsResult } from "./opencode";
 import { isDesktopRuntime } from "./runtime-env";
@@ -1357,7 +1358,15 @@ export function createClientV2(
 ): ReturnType<typeof createClient> {
   const baseUrl = opencode2BaseUrl.replace(/\/+$/, "");
   const fetchImpl = createV2Fetch(auth);
-  const compatibilityClient = createClient(baseUrl, directory, { mode: "omnirush", token: auth.token });
+  // Only the facade's shape: every 1.x call the adapter does not port fails
+  // here, locally, instead of reaching a 2.x engine that has no 1.x routes.
+  const compatibilityClient: ReturnType<typeof createClient> = createOpencodeClient({
+    baseUrl,
+    fetch: async (input) => Response.json({
+      name: "UnsupportedInV2",
+      message: `Not available on the OpenCode 2.x engine: ${(input instanceof Request ? input.url : String(input)).slice(baseUrl.length).split("?")[0]}`,
+    }, { status: 501 }),
+  });
   const permissionSessionByRequestID = new Map<string, string>();
   const questionFormsByID = new Map<string, NonNullable<ReturnType<typeof mapV2Question>>>();
 
@@ -1653,7 +1662,8 @@ export function createClientV2(
       const promptResult = await request(
         "POST",
         `/api/session/${encodeURIComponent(parameters.sessionID)}/prompt`,
-        { text },
+        // The UI's id becomes the saved user message, so an uncertain send can be checked by id.
+        { text, ...(parameters.messageID?.startsWith("msg_") ? { id: parameters.messageID } : {}) },
         options?.signal,
       );
       return promptResult.response.ok ? successfulResult(promptResult, {}) : failedResult(promptResult);
@@ -1705,6 +1715,18 @@ export function createClientV2(
         options?.signal,
       );
       return result.response.ok ? successfulResult(result, true) : failedResult(result);
+    },
+    diff: async (parameters: SessionParameters & { messageID?: string }, options?: RequestOptions) => {
+      const query = parameters.messageID ? `?from=${encodeURIComponent(parameters.messageID)}` : "";
+      const result = await request("GET", `/api/session/${encodeURIComponent(parameters.sessionID)}/diff${query}`, undefined, options?.signal);
+      return result.response.ok ? successfulResult(result, responseItems(result.payload)) : failedResult(result);
+    },
+    message: async (parameters: SessionParameters & { messageID: string }, options?: RequestOptions) => {
+      const result = await request("GET",
+        `/api/session/${encodeURIComponent(parameters.sessionID)}/message/${encodeURIComponent(parameters.messageID)}`, undefined, options?.signal);
+      if (!result.response.ok) return failedResult(result);
+      const mapped = mapV2Message(responseData(result.payload), parameters.sessionID);
+      return mapped ? successfulResult(result, mapped) : failedResult({ ...result, payload: { name: "InvalidV2MessageResponse" } });
     },
     fork: async (
       parameters: SessionParameters & { messageID?: string },
@@ -1771,6 +1793,7 @@ export function createClientV2(
       get: async (): Promise<FieldsResult<Record<string, never>>> => localResult(baseUrl, "/api/config", {}),
     },
     provider: {
+      auth: async () => localResult(baseUrl, "/api/provider/auth", {}),
       list: async (
         _parameters: DirectoryParameters = {},
         options?: RequestOptions,
@@ -1819,10 +1842,37 @@ export function createClientV2(
       },
     },
     app: {
-      agents: async (): Promise<FieldsResult<never[]>> => localResult(baseUrl, "/api/agent", []),
+      agents: async (_parameters?: DirectoryParameters, options?: RequestOptions) => {
+        const result = await request("GET", "/api/agent", undefined, options?.signal);
+        if (!result.response.ok) return failedResult(result);
+        // `name` is the 1.x identifier the UI selects by; 2.x calls it `id`.
+        return successfulResult(result, responseItems(result.payload).flatMap((item) => {
+          const id = readString(item, "id");
+          const mode = readString(item, "mode");
+          if (!id || (mode !== "primary" && mode !== "subagent" && mode !== "all")) return [];
+          const model = readRecord(item, "model");
+          const providerID = readString(model, "providerID");
+          const modelID = readString(model, "id");
+          const description = readString(item, "description");
+          return [{
+            name: id, mode, hidden: isRecord(item) && item.hidden === true,
+            permission: [], options: {},
+            ...(description ? { description } : {}),
+            ...(providerID && modelID ? { model: { providerID, modelID } } : {}),
+          }];
+        }));
+      },
     },
     command: {
-      list: async (): Promise<FieldsResult<never[]>> => localResult(baseUrl, "/api/command", []),
+      list: async (_parameters?: DirectoryParameters, options?: RequestOptions) => {
+        const result = await request("GET", "/api/command", undefined, options?.signal);
+        if (!result.response.ok) return failedResult(result);
+        return successfulResult(result, responseItems(result.payload).flatMap((item) => {
+          const name = readString(item, "name");
+          const description = readString(item, "description");
+          return name ? [{ name, template: "", hints: [], ...(description ? { description } : {}) }] : [];
+        }));
+      },
     },
     permission: {
       list: listPermissions,
@@ -1843,7 +1893,76 @@ export function createClientV2(
       },
     },
     find: {
-      files: async (): Promise<FieldsResult<never[]>> => localResult(baseUrl, "/api/fs/find", []),
+      files: async (
+        parameters: DirectoryParameters & { query: string; dirs?: "true" | "false"; type?: "file" | "directory"; limit?: number },
+        options?: RequestOptions,
+      ): Promise<FieldsResult<string[]>> => {
+        const query = new URLSearchParams({ query: parameters.query });
+        const type = parameters.type ?? (parameters.dirs === "false" ? "file" : undefined);
+        if (type) query.set("type", type);
+        if (parameters.limit !== undefined) query.set("limit", String(parameters.limit));
+        const result = await request("GET", `/api/fs/find?${query.toString()}`, undefined, options?.signal);
+        if (!result.response.ok) return failedResult(result);
+        // Directories end with a slash, as in 1.x; the folder itself ("/") is not a result.
+        return successfulResult(result, responseItems(result.payload).flatMap((item) => {
+          const path = readString(item, "path")?.replace(/\/+$/, "");
+          return path ? [readString(item, "type") === "directory" ? `${path}/` : path] : [];
+        }));
+      },
+    },
+    vcs: {
+      get: async (_parameters?: DirectoryParameters, options?: RequestOptions) => {
+        const result = await request("GET", "/api/vcs", undefined, options?.signal);
+        if (!result.response.ok) return failedResult(result);
+        const branch = readRecord(responseData(result.payload), "branch");
+        const current = readString(branch, "current");
+        const defaultBranch = readString(branch, "default");
+        return successfulResult(result, {
+          ...(current ? { branch: current } : {}),
+          ...(defaultBranch ? { default_branch: defaultBranch } : {}),
+        });
+      },
+      diff: async (parameters: DirectoryParameters & { mode?: string }, options?: RequestOptions) => {
+        // 1.x "git" is the uncommitted tree; 2.x calls it "working".
+        const mode = !parameters.mode || parameters.mode === "git" ? "working" : parameters.mode;
+        const result = await request("GET", `/api/vcs/diff?mode=${encodeURIComponent(mode)}`, undefined, options?.signal);
+        return result.response.ok ? successfulResult(result, responseItems(result.payload)) : failedResult(result);
+      },
+    },
+    project: {
+      list: async (_parameters?: DirectoryParameters, options?: RequestOptions) => {
+        const result = await request("GET", "/api/project", undefined, options?.signal);
+        if (!result.response.ok) return failedResult(result);
+        return successfulResult(result, responseItems(result.payload).flatMap((item) => {
+          const id = readString(item, "id");
+          const worktree = readString(item, "canonical");
+          return id && worktree && isRecord(item) ? [{ ...item, id, worktree }] : [];
+        }));
+      },
+      current: async (_parameters?: DirectoryParameters, options?: RequestOptions) => {
+        const result = await request("GET", "/api/location", undefined, options?.signal);
+        if (!result.response.ok) return failedResult(result);
+        const project = readRecord(result.payload, "project");
+        const id = readString(project, "id");
+        const worktree = readString(project, "canonical");
+        return id && worktree
+          ? successfulResult(result, { id, worktree, time: { created: 0 }, sandboxes: [] })
+          : failedResult({ ...result, payload: { name: "InvalidV2LocationResponse" } });
+      },
+    },
+    path: {
+      get: async (_parameters?: DirectoryParameters, options?: RequestOptions) => {
+        const result = await request("GET", "/api/location", undefined, options?.signal);
+        if (!result.response.ok) return failedResult(result);
+        const current = readString(result.payload, "directory") ?? "";
+        const worktree = readString(readRecord(result.payload, "project"), "canonical") ?? current;
+        // 2.x has no home/state/config paths for clients.
+        return successfulResult(result, { home: "", state: "", config: "", worktree, directory: current });
+      },
+    },
+    // No language-server status in 2.x and no client-side provider sign-in (the server owns providers).
+    lsp: {
+      status: async () => localResult(baseUrl, "/api/lsp", []),
     },
     mcp: {
       status: async (_parameters?: DirectoryParameters, options?: RequestOptions): Promise<FieldsResult<Record<string, { status: string; error?: string }>>> => {
@@ -1888,6 +2007,10 @@ export function createClientV2(
   Object.assign(compatibilityClient.question, adapter.question);
   Object.assign(compatibilityClient.v2.session.permission, adapter.v2.session.permission);
   Object.assign(compatibilityClient.find, adapter.find);
+  Object.assign(compatibilityClient.vcs, adapter.vcs);
+  Object.assign(compatibilityClient.project, adapter.project);
+  Object.assign(compatibilityClient.path, adapter.path);
+  Object.assign(compatibilityClient.lsp, adapter.lsp);
   Object.assign(compatibilityClient.mcp, adapter.mcp);
   Object.assign(compatibilityClient.event, adapter.event);
   v2Clients.add(compatibilityClient);

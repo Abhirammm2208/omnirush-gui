@@ -9,7 +9,7 @@ import { toast } from "@/components/ui/sonner";
 import { captureAnalyticsEvent } from "@/app/lib/analytics";
 import { useUpdateGateBlocked } from "@/app/lib/update-gate";
 import { interruptSessionTurn, sessionNeedsStop, submitAfterInterruption, subscribeSessionInterruption } from "@/app/lib/opencode-interruption";
-import { createClient, createPromptMessageID, hasAcceptedPromptMessage, isPromptAdmissionUnknown, isSendStopped, unwrap } from "@/app/lib/opencode";
+import { createPromptMessageID, hasAcceptedPromptMessage, isPromptAdmissionUnknown, isSendStopped, unwrap } from "@/app/lib/opencode";
 import { compactSession } from "@/app/lib/opencode-session";
 import { createClientV2, isOpencodeV2BaseUrl } from "@/app/lib/opencode-v2-adapter";
 import * as opencodeSessionNative from "@/app/lib/opencode-session-native";
@@ -1413,9 +1413,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
   const autoOpenedTargetRef = useRef<string | null>(null);
   const initializedAutoOpenSessionRef = useRef<string | null>(null);
   const opencodeClient = useMemo(
-    () => isOpencodeV2BaseUrl(props.opencodeBaseUrl)
-      ? createClientV2(props.opencodeBaseUrl, props.workspaceRoot || undefined, { token: props.omnirushToken })
-      : createClient(props.opencodeBaseUrl, props.workspaceRoot.trim() || undefined, { token: props.omnirushToken, mode: "omnirush" }),
+    () => createClientV2(props.opencodeBaseUrl, props.workspaceRoot || undefined, { token: props.omnirushToken }),
     [props.opencodeBaseUrl, props.omnirushToken, props.workspaceRoot],
   );
 
