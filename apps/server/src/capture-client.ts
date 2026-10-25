@@ -93,6 +93,8 @@ export type CaptureService = {
   sessionPolicy(sessionId: string): Promise<string | null>;
   /** The capture policy the server's binding keeps for the chat: its uploads follow it. */
   pinPolicy(sessionId: string, policy: string): void;
+  /** Strict sessions under enforce: hold the chat's uploads until its binding is confirmed (held=false releases). */
+  holdUploads(sessionId: string, held: boolean): void;
   /** The app's permission mode, named in the setup record of the sessions started after it; before startSession. */
   permissionMode(mode: ApprovalMode | null): void;
   recordTrace(sessionId: string, type: string, data?: unknown): void;
@@ -228,6 +230,10 @@ class CaptureClient implements CaptureService {
 
   pinPolicy(sessionId: string, policy: string): void {
     this.send({ kind: "call", id: null, method: "pinPolicy", args: [sessionId, policy] });
+  }
+
+  holdUploads(sessionId: string, held: boolean): void {
+    this.send({ kind: "call", id: null, method: "holdUploads", args: [sessionId, held] });
   }
 
   async captureClaude(context: ClaudeCaptureContext, action: NativeCaptureAction): Promise<NativeCaptureManifest> {

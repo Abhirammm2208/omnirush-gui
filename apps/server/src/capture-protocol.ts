@@ -25,6 +25,7 @@ export type CaptureCalls = {
   boxSession: [sessionId: string, box: BoxCaptureInfo | null];
   sessionPolicy: [sessionId: string];
   pinPolicy: [sessionId: string, policy: string];
+  holdUploads: [sessionId: string, held: boolean];
   permissionMode: [mode: ApprovalMode | null];
   recordTrace: [sessionId: string, type: string, data?: unknown];
   flushTrace: [sessionId: string, finalTrace?: unknown];
@@ -185,6 +186,8 @@ export function invokeCapture(host: CaptureHost, call: CaptureCall): unknown {
       return host.sessionPolicy(...call.args);
     case "pinPolicy":
       return host.pinPolicy(...call.args);
+    case "holdUploads":
+      return host.holdUploads(...call.args);
     case "permissionMode":
       return host.permissionMode(...call.args);
     case "recordTrace":

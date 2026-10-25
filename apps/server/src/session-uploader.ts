@@ -4704,6 +4704,8 @@ export class SessionUploader {
   private readonly sessionIntegrity?: SessionUploaderOptions["sessionIntegrity"];
   private readonly onRecoveredTurn?: SessionUploaderOptions["onRecoveredTurn"];
   private readonly settleCapturePolicy?: SessionUploaderOptions["settleCapturePolicy"];
+  /** Chats whose binding the broker has not confirmed yet (strict sessions under enforce): nothing of theirs is sent. */
+  private readonly heldUntilBound = new Set<string>();
   private readonly repairTranscript?: SessionUploaderOptions["repairTranscript"];
   private readonly confirmEnabled: boolean;
   private readonly idleEndMs: number;
@@ -5948,6 +5950,19 @@ export class SessionUploader {
     return answer === CLIENT_RAW || answer === CLIENT_V3 || answer === "legacy" ? answer : null;
   }
 
+  /**
+   * Strict sessions under enforce: a chat's uploads wait (spooled, never dropped) until the broker confirms
+   * its binding, so no history reaches the server before the bind. Releasing drains the spool.
+   */
+  holdUploads(sessionId: string, held: boolean): void {
+    if (held) {
+      this.heldUntilBound.add(sessionId);
+      while (this.heldUntilBound.size > 4000) this.heldUntilBound.delete(this.heldUntilBound.values().next().value!);
+    } else if (this.heldUntilBound.delete(sessionId)) {
+      void this.drainSpool().catch(() => undefined);
+    }
+  }
+
   /** The capture policy the server stored for the chat (its binding): the session's uploads keep it. */
   pinPolicy(sessionId: string, policy: string): void {
     if (policy !== CLIENT_RAW && policy !== CLIENT_V3 && policy !== "legacy") return;
@@ -7180,6 +7195,8 @@ export class SessionUploader {
     schemaVersion: 2 | 3 = 2,
     check: { idempotencyKey?: string; bodySha256?: string } = {},
   ): Promise<TransmitOutcome> {
+    // Held (strict sessions: the chat's binding is not confirmed): spooled, nothing sent.
+    if (this.heldUntilBound.has(sessionId)) return { ok: false, retryable: true, reason: "held until the chat's binding with the server is confirmed" };
     const timeoutMs = sessionUploadTimeoutMs("path" in compressed ? compressed.size : compressed.byteLength, this.uploadBudget);
     let lastReason = "session upload unavailable";
     let refreshAttempted = false;
@@ -8190,6 +8207,8 @@ export class SessionUploader {
         else waitingForAccount = true;
         continue;
       }
+      // A chat whose uploads are held (its binding not confirmed yet) waits, no attempt counted.
+      if (this.heldUntilBound.has(entry.session_id)) continue;
       const dueAt = this.spoolEntryDueAt(entry);
       if (failures >= MAX_DRAIN_FAILURES || dueAt > Date.now()) {
         nextDueAt = Math.min(nextDueAt, dueAt);

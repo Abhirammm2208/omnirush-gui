@@ -106,6 +106,8 @@ type BrokerOptions = {
   onCapturePolicy?: (sessionId: string, policy: string) => void;
   /** What a chat's binding says: verified, or bound late and why (a late binding is never verified). */
   onBinding?: (sessionId: string, binding: { verified: boolean; lateReason?: string }) => void;
+  /** Strict sessions under enforce: a chat's uploads are held until its binding is confirmed (held=false releases them). */
+  onUploadHold?: (sessionId: string, held: boolean) => void;
   /** The last strict_sessions answer per server, kept on disk: it stands while capabilities cannot be fetched. */
   strictStateFile?: string;
   /** How long a strict-session bind may take (BIND_TIMEOUT_MS unless a test shrinks it). */
@@ -1306,6 +1308,9 @@ export class OmniRushGatewayBroker {
   private readonly strictStateFile?: string;
   private readonly onCapturePolicy?: BrokerOptions["onCapturePolicy"];
   private readonly onBinding?: BrokerOptions["onBinding"];
+  private readonly onUploadHold?: BrokerOptions["onUploadHold"];
+  /** Chats whose binding is confirmed in this process (bound, or not bindable): their uploads may go out. */
+  private readonly bindsConfirmed = new Set<string>();
   /** Strict sessions: each chat binds its model and mode once per process (model-modes/strict-sessions.mjs). */
   private readonly reasoningSummaryFor: (model: string) => boolean | Promise<boolean>;
   private readonly clientHeader: string | null;
@@ -1374,6 +1379,7 @@ export class OmniRushGatewayBroker {
     this.bindSession = this.makeBinder(options.bindTimeoutMs);
     this.onCapturePolicy = options.onCapturePolicy;
     this.onBinding = options.onBinding;
+    this.onUploadHold = options.onUploadHold;
     this.strictStateFile = options.strictStateFile;
 
     this.reasoningSummaryFor = options.reasoningSummaryFor ?? defaultReasoningSummaryFor;
@@ -2218,9 +2224,12 @@ export class OmniRushGatewayBroker {
     const ownPin = this.chatPin?.(session) ?? null;
     // A sub-agent has no prompt of its own: it takes its main chat's capture policy, as the server does.
     const capturePolicy = ownPin?.capturePolicy ?? rootPin?.capturePolicy ?? null;
+    // Under enforce nothing of an unconfirmed chat is uploaded until its binding is (the server's late check).
+    const enforce = strict.mode === "enforce";
+    if (enforce && !this.bindsConfirmed.has(session)) this.uploadHold(session, true);
     const outcome = await this.bindSession({
       path: strict.path,
-      enforce: strict.mode === "enforce",
+      enforce,
       sessionId: session,
       rootId,
       model: this.sessionModels.get(session) ?? model,
@@ -2239,11 +2248,22 @@ export class OmniRushGatewayBroker {
       const late = typeof binding.late_reason === "string" && binding.late_reason ? binding.late_reason : binding.bound_late === true ? "bound_late" : null;
       try { this.onBinding?.(session, { verified: binding.verified === true && !late, ...(late ? { lateReason: late } : {}) }); } catch { /* a listener never breaks the request */ }
     }
-    if (!("refused" in outcome)) return null;
+    if (!("refused" in outcome)) {
+      if (!this.bindsConfirmed.has(session)) {
+        this.bindsConfirmed.add(session);
+        while (this.bindsConfirmed.size > 4000) this.bindsConfirmed.delete(this.bindsConfirmed.values().next().value!);
+        if (enforce) this.uploadHold(session, false);
+      }
+      return null;
+    }
     this.log?.("info", "omnirush.ai refused this chat's binding; not sent", { code: outcome.refused.code });
     const { code, message, retry } = outcome.refused;
     if (retry) return Response.json({ detail: code, error: { type: "server_error", code, message } }, { status: 503, headers: { "x-should-retry": "true" } });
     return Response.json({ detail: code, error: { type: "invalid_request_error", code, message } }, { status: code === VERIFICATION_REQUIRED ? 403 : 400, headers: { "x-should-retry": "false" } });
+  }
+
+  private uploadHold(sessionId: string, held: boolean): void {
+    try { this.onUploadHold?.(sessionId, held); } catch { /* a listener never breaks the request */ }
   }
 
   /**

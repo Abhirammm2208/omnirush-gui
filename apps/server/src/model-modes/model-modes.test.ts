@@ -388,6 +388,7 @@ describe("model modes", () => {
       strictStateFile: path.join(dir, "strict-sessions.json"),
       bindTimeoutMs: 100,
       chatPin: () => ({ box: false, revision: null, capturePolicy: "legacy" }),
+      onUploadHold: (id, held) => order.push(`${held ? "hold" : "release"} ${id}`),
       fetch: async (input) => {
         const url = new URL(String(input));
         if (url.pathname === "/omnirush/collect/capabilities") return Response.json({ schema_versions: [1, 2, 3], strict_sessions: { mode: "enforce", bind: true, path: "/omnirush/device/session-binding", header: "X-OmniRush-Strict-Session" } });
@@ -411,13 +412,14 @@ describe("model modes", () => {
     const post = (id = "ses_rebind") => b.handle(request({ model: "gpt-6-astra", tools: [{ type: "function", name: "bash" }] }, { "x-omnirush-session-id": id }), "responses");
     expect((await post()).status).toBe(503);
     expect((await post()).status).toBe(200);
-    expect(order).toEqual(["bind 503", "bind 200", "upstream"]);
+    // The chat's uploads are held from its first bind until the retry's bind is confirmed.
+    expect(order).toEqual(["hold ses_rebind", "bind 503", "hold ses_rebind", "bind 200", "release ses_rebind", "upstream"]);
     // The gateway cannot confirm a bound chat: it is bound again before the same request goes up.
     await b.sessionUploadCapabilities();
     order.length = 0;
     gatewayRefuses = 1;
     expect((await post("ses_second")).status).toBe(200);
-    expect(order).toEqual(["bind 200", "upstream 503", "bind 200", "upstream"]);
+    expect(order).toEqual(["hold ses_second", "bind 200", "release ses_second", "upstream 503", "bind 200", "upstream"]);
     rmSync(dir, { recursive: true, force: true });
   });
 
