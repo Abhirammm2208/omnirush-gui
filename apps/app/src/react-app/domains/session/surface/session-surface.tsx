@@ -2575,7 +2575,6 @@ export function SessionSurface(props: SessionSurfaceProps) {
     try {
       await interruptSessionTurn(props.opencodeBaseUrl, opencodeClient, props.sessionId,
         props.workspaceRoot.trim() || undefined, {
-          admissionUnknown: phase.kind === "admission_unknown",
           onStopped: () => dispatchQueuedDrain(props.sessionId, { type: "stop_confirmed" }),
         });
     } catch (error) {

@@ -300,3 +300,12 @@ test("blocked and cancelled sends classify as needs_input and rejected without w
   const running = reduceQueuedDrain(live, { type: "busy_observed" });
   expect(reduceQueuedDrain(running, { type: "queue_cleared" })).toBe(running);
 });
+
+test("a confirmed stop releases an unknown admission", () => {
+  let state = reduceQueuedDrain(INITIAL_QUEUED_DRAIN_STATE, { type: "send_started", itemId: "lost" });
+  state = reduceQueuedDrain(state, { type: "send_unknown", itemId: "lost", messageID: "msg_lost", at: 1 });
+  expect(state.phase.kind).toBe("admission_unknown");
+  expect(reduceQueuedDrain(state, { type: "queue_cleared" })).toBe(state);
+  state = reduceQueuedDrain(state, { type: "stop_confirmed" });
+  expect(canAdmitNextQueuedItem(state)).toBe(true);
+});

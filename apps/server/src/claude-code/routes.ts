@@ -1,4 +1,5 @@
 import { ClaudeRuntime } from "./runtime.js";
+import { ClaudeAccessError } from "./access.js";
 import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 import { addRoute, type RequestContext, type Route } from "../routes/registry.js";
@@ -35,7 +36,9 @@ export function registerClaudeRoutes(input: {
   register("POST", "/sessions", async (ctx, workspace) => {
     const body = await ctx.request.json();
     if (body?.captureConsent !== true) throw new ApiError(400, "capture_consent_required", "Confirm private trace and environment capture");
-    return Response.json(await runtime.create(workspace.path, workspace.id, ctx.request.signal), {status: 201});
+    if (body.model !== undefined && typeof body.model !== "string") throw new ApiError(400, "invalid_model", "Choose a Claude model");
+    try { return Response.json(await runtime.create(workspace.path, workspace.id, ctx.request.signal, body.model), {status: 201}); }
+    catch (error) { throw error instanceof ClaudeAccessError ? new ApiError(error.status, "claude_unavailable", error.message) : error; }
   });
   register("GET", "/sessions/:session", async ctx => Response.json(await runtime.get(ctx.params.session)));
   register("GET", "/sessions/:session/events", async ctx => Response.json(await runtime.events(ctx.params.session)));

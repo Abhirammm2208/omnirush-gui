@@ -61,6 +61,7 @@ import {
 } from "@/app/utils";
 import { isSupportedModelProvider, providerCatalogRank } from "@/app/lib/provider-catalog";
 import { useModelModeFilter } from "@/react-app/domains/session/surface/model-modes";
+import { claudeModelOptions, useClaudeModels, useModelPickGate } from "@/react-app/domains/session/surface/claude-models";
 
 function getProviderDisplayName(providerId: string) {
   return providerId
@@ -265,7 +266,12 @@ export function ModelSelect({
   // Only the models the open project's mode allows (sandbox or not: model-modes.ts).
   const modeAllows = useModelModeFilter((state) => state.allows);
   const allOptions = useModelOptions(open, fallbackOptions, denAuth.isSignedIn);
-  const catalogOptions = React.useMemo(() => allOptions.filter((option) => modeAllows(option)), [allOptions, modeAllows]);
+  // Claude is listed in every project: picking it sets the project's sandbox up (claude-models.ts).
+  const claudeCatalog = useClaudeModels((state) => state.catalog);
+  const catalogOptions = React.useMemo(
+    () => [...allOptions.filter((option) => modeAllows(option)), ...claudeModelOptions({ catalog: claudeCatalog })],
+    [allOptions, claudeCatalog, modeAllows],
+  );
   const modelOptions = React.useMemo(
     () => dedupeModelOptions(
       overlaySelectedBehavior(
@@ -378,19 +384,36 @@ export function ModelSelect({
     && selectedThinkingOptions.length > 0
     && Boolean(effectiveBehaviorLabel);
 
-  const applyModel = (option: ModelOption, behavior?: string | null) => {
-    useModelCollectionsStore.getState().recordRecent(option);
-    onChange({ providerID: option.providerID, modelID: option.modelID }, behavior);
-    if (behavior !== undefined) {
-      onBehaviorChange?.(behavior);
-    }
+  const closePicker = () => {
     setSearch("");
     setThinkingFor(null);
     setPane("root");
     onOpenChange(false);
   };
 
+  // The route may take the pick instead (a new-chat popup, Claude, a message); a plain switch is not taken.
+  const routeTakesPick = (option: ModelOption) =>
+    useModelPickGate.getState().intercept({ providerID: option.providerID, modelID: option.modelID }, sessionId ?? null);
+
+  const applyModel = (option: ModelOption, behavior?: string | null) => {
+    if (routeTakesPick(option)) {
+      closePicker();
+      return;
+    }
+    useModelCollectionsStore.getState().recordRecent(option);
+    onChange({ providerID: option.providerID, modelID: option.modelID }, behavior);
+    if (behavior !== undefined) {
+      onBehaviorChange?.(behavior);
+    }
+    closePicker();
+  };
+
   const handleSelect = (option: ModelOption) => {
+    // Before the effort step: a pick the route takes never asks for an effort first.
+    if (routeTakesPick(option)) {
+      closePicker();
+      return;
+    }
     const thinking = thinkingOptionsFor(option);
     if (thinking.length > 0 && onBehaviorChange) {
       setThinkingFor(option);

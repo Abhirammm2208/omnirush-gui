@@ -1,5 +1,5 @@
 import type { Client } from "../types";
-import { isPromptAdmissionUnknown, promptHeldForSandbox, stopHeldSend, unwrap } from "./opencode";
+import { promptHeldForSandbox, stopHeldSend, unwrap } from "./opencode";
 
 type Submission = {
   messageID?: string;
@@ -71,7 +71,7 @@ export function interruptSessionTurn(
   client: Client,
   sessionID: string,
   directory?: string,
-  options: { timeoutMs?: number; admissionUnknown?: boolean; onStopped?: () => void } = {},
+  options: { timeoutMs?: number; onStopped?: () => void } = {},
 ): Promise<void> {
   const turn = turnFor(baseUrl, sessionID);
   // Share the cancellation request, not permission for intervening sends to
@@ -92,7 +92,7 @@ export function interruptSessionTurn(
     controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
   });
   const interruption = Promise.race([
-    stopForegroundTree(client, sessionID, directory, pending, controller.signal, options.admissionUnknown === true),
+    stopForegroundTree(client, sessionID, directory, pending, controller.signal),
     deadline,
   ]).then(() => {
     // Reconcile the old admission before releasing waiting successor sends.
@@ -118,7 +118,6 @@ async function stopForegroundTree(
   directory: string | undefined,
   pending: readonly Submission[],
   signal: AbortSignal,
-  admissionUnknown: boolean,
 ) {
   const options = { signal };
   const children = async (sessionID: string) => {
@@ -179,7 +178,6 @@ async function stopForegroundTree(
     }
   };
   const waiting = new Set(pending);
-  const reconciled = new Set<Submission>();
   while (waiting.size > 0) {
     signal.throwIfAborted();
     for (const submission of waiting) if (submission.settled) waiting.delete(submission);
@@ -200,7 +198,6 @@ async function stopForegroundTree(
           // message or an idle snapshot on its own. Reject only the UI wait;
           // never replay the request, and still stop/verify the child tree below.
           if (admitted && terminal) {
-            reconciled.add(submission);
             submission.cancel();
             waiting.delete(submission);
           }
@@ -211,11 +208,9 @@ async function stopForegroundTree(
   }
   signal.throwIfAborted();
   await stop(rootID, before);
-  // A lost admission response is not proof that the old POST cannot arrive
-  // later. Do not claim a clean handoff or replay that prompt.
-  if (admissionUnknown || pending.some((submission) => !reconciled.has(submission) && isPromptAdmissionUnknown(submission.error))) {
-    throw new Error("The previous message's acceptance is still unknown. Check acceptance, then retry Stop.");
-  }
+  // An unknown admission no longer blocks: once every stopped turn is idle the
+  // user's Stop is confirmed and the hold clears. The old prompt is never resent;
+  // if its POST still lands later it shows as a new run the user can stop again.
   while (true) {
     signal.throwIfAborted();
     const statuses = unwrap(await client.session.status({ directory }, options));

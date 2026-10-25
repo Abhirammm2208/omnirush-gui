@@ -1,12 +1,18 @@
 // Embedded so the compiled desktop server and the CLI ship exactly the same runner.
 export const SDK_VERSION = "0.3.306";
 export const CLAUDE_VERSION = "2.1.306";
-export const IMAGE = `omnirush-claude-sdk:${SDK_VERSION}-3`;
+export const IMAGE = `omnirush-claude-sdk:${SDK_VERSION}-4`;
+/** The model baked into the runtime image's policy file; a session on another model replaces that file before its base checkpoint. */
 export const MODEL = "claude-opus-5-5";
+/** A Claude catalog id (claude-<name>), the only shape a session may pin. */
+export const CLAUDE_MODEL_ID = /^claude-[a-z0-9][a-z0-9.-]{0,62}$/;
 export const CAPTURE_POLICY_VERSION = "claude-native-2";
+/** The family aliases denied for a session: every family but its own (Opus keeps its original ["sonnet", "haiku"]). */
+export const deniedFamilies = (model: string) => ["opus", "sonnet", "haiku"].filter(family => !model.includes(family));
 // This is also passed as SDK managed policy. The on-disk copy is root-owned
 // so a project setting or tool cannot widen it for a nested Claude process.
-export const MANAGED_SETTINGS = JSON.stringify({availableModels: [MODEL], availableModelsMatch: "exact", enforceAvailableModels: true, deniedModels: ["sonnet", "haiku"], allowManagedHooksOnly: true});
+export const managedSettings = (model: string) => JSON.stringify({availableModels: [model], availableModelsMatch: "exact", enforceAvailableModels: true, deniedModels: deniedFamilies(model), allowManagedHooksOnly: true});
+export const MANAGED_SETTINGS = managedSettings(MODEL);
 export const DOCKERFILE = `FROM node:22.21.1-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep python3 python3-venv ca-certificates zip unzip procps && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@10.27.0 --activate
@@ -82,7 +88,7 @@ try {
     ...(request.resume ? {resume: request.sessionId} : {sessionId: request.sessionId}),
     persistSession: true, includePartialMessages: true, forwardSubagentText: true,
     includeHookEvents: true, settingSources: [],
-    managedSettings: {availableModels: [request.model], availableModelsMatch: 'exact', enforceAvailableModels: true, deniedModels: ['sonnet', 'haiku'], allowManagedHooksOnly: true},
+    managedSettings: {availableModels: [request.model], availableModelsMatch: 'exact', enforceAvailableModels: true, deniedModels: ['opus', 'sonnet', 'haiku'].filter(family => !request.model.includes(family)), allowManagedHooksOnly: true},
     settings: {model: request.model, fallbackModel: []},
     systemPrompt: {type: 'preset', preset: 'claude_code'},
     permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true,

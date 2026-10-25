@@ -14,7 +14,7 @@ import { once } from "node:events";
 import { pipeline } from "node:stream/promises";
 import { createGzip, createGunzip } from "node:zlib";
 import { NativeCapture } from "./native-capture.js";
-import { CAPTURE_POLICY_VERSION, CLAUDE_VERSION, CONTROLLER, DOCKERFILE, IMAGE, MANAGED_SETTINGS, MODEL, SDK_VERSION } from "./sandbox-assets.js";
+import { CAPTURE_POLICY_VERSION, CLAUDE_MODEL_ID, CLAUDE_VERSION, CONTROLLER, DOCKERFILE, IMAGE, MANAGED_SETTINGS, MODEL, SDK_VERSION, managedSettings } from "./sandbox-assets.js";
 import { PACKAGE_JSON, LOCKFILE } from "./sandbox-lock.js";
 import { zipDirectory } from "./zip.js";
 import { REPLAY_ADAPTER } from "./replay-adapter.js";
@@ -28,7 +28,8 @@ export type ClaudeBudgetSnapshot = {
   sessionLimitTokens?: number | null; sessionUsedTokens?: number; sessionRemainingTokens?: number | null;
   accountLimitTokens?: number; accountRemainingTokens?: number; accountScope?: "day" | "week"; accountResetAt?: string;
 };
-export type ClaudeAccess = { owner: string; capabilities?: string[]; budget?: ClaudeBudgetSnapshot };
+/** `models`: the Claude ids this account may run (the server's claude_code.models); `catalog`: what the picker shows every account; `reason`: why nothing may run (access.reason). */
+export type ClaudeAccess = { owner: string; capabilities?: string[]; budget?: ClaudeBudgetSnapshot; models?: string[]; catalog?: {id: string; name: string}[]; reason?: string | null };
 export type ClaudeAuthorization = { sessionId: string; owner: string; model: string; workspaceId: string; contractSha256: string; refresh?: boolean };
 export type ClaudeGrant = {
   owner: string; baseUrl: string; token: string; sessionId: string; model: string;
@@ -267,9 +268,10 @@ export class ClaudeRuntime {
   }
   async available() {
     const access = await this.access();
-    if (!access.capabilities?.includes("claude-code")) return {allowed: false, sandboxReady: false, model: MODEL, sdkVersion: SDK_VERSION};
-    try { await this.docker(["info", "--format", "{{.ServerVersion}}"], {timeout: 10_000}); return {allowed: true, sandboxReady: true, model: MODEL, sdkVersion: SDK_VERSION}; }
-    catch { return {allowed: true, sandboxReady: false, model: MODEL, sdkVersion: SDK_VERSION}; }
+    const models = access.models ?? [], listed = {model: models[0] ?? MODEL, models, catalog: access.catalog ?? [], reason: access.reason ?? null, sdkVersion: SDK_VERSION};
+    if (!access.capabilities?.includes("claude-code") || !models.length) return {allowed: false, sandboxReady: false, ...listed};
+    try { await this.docker(["info", "--format", "{{.ServerVersion}}"], {timeout: 10_000}); return {allowed: true, sandboxReady: true, ...listed}; }
+    catch { return {allowed: true, sandboxReady: false, ...listed}; }
   }
   async prepare(signal?: AbortSignal) {
     const job = this.reserve(`prepare:${randomUUID()}`, signal);
@@ -350,12 +352,16 @@ export class ClaudeRuntime {
     try { await this.createContainer(session.container, checkpoint.image, false, signal, ownership); interrupted(signal); }
     catch (error) { await this.cleanupStartup(ownership); throw error; }
   }
-  async create(workspace: string, workspaceId: string, signal?: AbortSignal): Promise<ClaudeSession> {
+  /** `model`: a catalog id the server lists for this account (default: its first). The session keeps it for good. */
+  async create(workspace: string, workspaceId: string, signal?: AbortSignal, requested?: string): Promise<ClaudeSession> {
     const id = randomUUID(), job = this.reserve(id, signal), ownership = randomUUID();
     const container = `omnirush-claude-${id}`;
     let attempted = false;
     try {
-      const {owner} = await this.access(undefined, job.signal); await this.prepare(job.signal);
+      const access = await this.access(undefined, job.signal);
+      const {owner} = access, model = requested ?? access.models?.[0];
+      if (!model || !CLAUDE_MODEL_ID.test(model) || !access.models?.includes(model)) throw new ClaudeAccessError(403, "This Claude model isn't available on your account yet");
+      await this.prepare(job.signal);
       interrupted(job.signal);
       const root = await fsp.realpath(workspace);
       if (!(await fsp.stat(root)).isDirectory() || root === path.parse(root).root) throw new Error("Choose a project directory");
@@ -371,19 +377,21 @@ export class ClaudeRuntime {
       await this.docker(["cp", `${root}${path.sep}.`, `${container}:/workspace/`], {signal: job.signal, timeout: 5 * 60_000});
       await this.docker(["start", container], {signal: job.signal});
       await this.docker(["exec", "--user", "root", container, "chown", "-R", "node:node", "/workspace"], {signal: job.signal});
+      // The session's own model policy, root-owned, in the base checkpoint (the image carries MODEL's).
+      if (model !== MODEL) await this.docker(["exec", "-i", "--user", "root", container, "sh", "-c", "cat > /etc/claude-code/managed-settings.json"], {input: managedSettings(model), signal: job.signal});
       await this.docker(["stop", "--time", "2", container], {signal: job.signal});
       const base = await this.checkpoint(container, dir, [], job.signal);
       await this.docker(["rm", container], {signal: job.signal});
       await this.createContainer(container, base.image, false, job.signal, ownership);
       interrupted(job.signal);
       const contract: ClaudeSessionContract = {
-        schema: 1, sessionId: id, owner, workspaceId, model: MODEL,
-        harness: this.harnessContract(),
+        schema: 1, sessionId: id, owner, workspaceId, model,
+        harness: this.harnessContract(model),
         execution: {kind: "docker", os: "linux", architecture: image.Architecture, workingDirectory: "/workspace", shell: "/bin/bash", runtimeImage: image.Id, baseImage: base.image, workspace: "session-copy"},
         capture: {policyVersion: CAPTURE_POLICY_VERSION, originals: "private", modelIsolation: "exact", scope: "managed-inference", network: "development-network-enabled", initialWorkspaceProvenance: "user-supplied-unattested"},
       };
       const contractSha256 = digest(JSON.stringify(contract));
-      const session: ClaudeSession = {schema: 1, id, owner, workspaceId, surface: this.options.surface, model: MODEL, sdkVersion: SDK_VERSION, claudeVersion: CLAUDE_VERSION, createdAt: new Date().toISOString(), container, base, turns: [], capture: "capturing", replay: "unverified", issues: [], contract, contractSha256, compatibility: "current", modelIsolation: initialModelIsolation(MODEL)};
+      const session: ClaudeSession = {schema: 1, id, owner, workspaceId, surface: this.options.surface, model, sdkVersion: SDK_VERSION, claudeVersion: CLAUDE_VERSION, createdAt: new Date().toISOString(), container, base, turns: [], capture: "capturing", replay: "unverified", issues: [], contract, contractSha256, compatibility: "current", modelIsolation: initialModelIsolation(model)};
       save(path.join(dir, "policy", "contract.json"), {contract, sha256: contractSha256});
       save(path.join(dir, "session.json"), session); return session;
     } catch (e) {
@@ -449,8 +457,8 @@ export class ClaudeRuntime {
     found.modelIsolation ??= initialModelIsolation(found.model, true);
     return found;
   }
-  private harnessContract(): ClaudeSessionContract["harness"] {
-    return {name: "claude-code", sdkVersion: SDK_VERSION, claudeVersion: CLAUDE_VERSION, controllerSha256: digest(CONTROLLER), lockSha256: digest(PACKAGE_JSON + "\n" + LOCKFILE), managedSettingsSha256: digest(MANAGED_SETTINGS), dockerfileSha256: digest(DOCKERFILE)};
+  private harnessContract(model = MODEL): ClaudeSessionContract["harness"] {
+    return {name: "claude-code", sdkVersion: SDK_VERSION, claudeVersion: CLAUDE_VERSION, controllerSha256: digest(CONTROLLER), lockSha256: digest(PACKAGE_JSON + "\n" + LOCKFILE), managedSettingsSha256: digest(managedSettings(model)), dockerfileSha256: digest(DOCKERFILE)};
   }
   private compatibility(session: ClaudeSession): NonNullable<ClaudeSession["compatibility"]> {
     if (!session.contract || !session.contractSha256) return "legacy_unverified";
@@ -458,8 +466,8 @@ export class ClaudeRuntime {
     let saved: unknown;
     try { saved = JSON.parse(fs.readFileSync(path.join(this.dir(session.owner, session.id), "policy", "contract.json"), "utf8")); } catch { return "contract_invalid"; }
     if (!isRecord(saved) || !isRecord(saved.contract) || saved.sha256 !== session.contractSha256 || digest(JSON.stringify(saved.contract)) !== session.contractSha256 || digest(JSON.stringify(c)) !== session.contractSha256 ||
-      c.schema !== 1 || c.sessionId !== session.id || c.owner !== session.owner || c.workspaceId !== session.workspaceId || c.model !== session.model || c.model !== MODEL || c.execution?.baseImage !== session.base.image || c.execution?.kind !== "docker" || c.execution.os !== "linux" || c.execution.shell !== "/bin/bash" || c.execution.workingDirectory !== "/workspace") return "contract_invalid";
-    if (session.sdkVersion !== SDK_VERSION || session.claudeVersion !== CLAUDE_VERSION || JSON.stringify(c.harness) !== JSON.stringify(this.harnessContract()) || c.capture?.policyVersion !== CAPTURE_POLICY_VERSION) return "runtime_upgrade_required";
+      c.schema !== 1 || c.sessionId !== session.id || c.owner !== session.owner || c.workspaceId !== session.workspaceId || c.model !== session.model || !CLAUDE_MODEL_ID.test(c.model) || c.execution?.baseImage !== session.base.image || c.execution?.kind !== "docker" || c.execution.os !== "linux" || c.execution.shell !== "/bin/bash" || c.execution.workingDirectory !== "/workspace") return "contract_invalid";
+    if (session.sdkVersion !== SDK_VERSION || session.claudeVersion !== CLAUDE_VERSION || JSON.stringify(c.harness) !== JSON.stringify(this.harnessContract(session.model)) || c.capture?.policyVersion !== CAPTURE_POLICY_VERSION) return "runtime_upgrade_required";
     return "current";
   }
   private assertResumable(session: ClaudeSession) {
@@ -711,7 +719,7 @@ export class ClaudeRuntime {
       broker = await this.broker(session, () => isolationStop.abort(), executionSignal);
       interrupted(executionSignal);
       const actual = await this.docker(["exec", session.container, "sha256sum", "/opt/claude/controller.mjs", "/etc/claude-code/managed-settings.json"], {signal: executionSignal});
-      if (actual.split("\n").map(line => line.split(/\s+/)[0]).join(":") !== `${digest(CONTROLLER)}:${digest(MANAGED_SETTINGS)}`) throw new Error("The sandbox controller or managed model policy changed");
+      if (actual.split("\n").map(line => line.split(/\s+/)[0]).join(":") !== `${digest(CONTROLLER)}:${digest(managedSettings(session.model))}`) throw new Error("The sandbox controller or managed model policy changed");
       await this.docker(["exec", "-i", session.container, "node", "/opt/claude/controller.mjs"], {
         input: JSON.stringify({sessionId: session.id, resume: turn.number > 1, turn: turn.number, prompt, model: session.model, baseUrl: broker.baseUrl, token: broker.token}), signal: executionSignal, timeout: 60 * 60_000,
         stdout: bytes => { collector.recordStream("sdk", bytes, offset); offset += bytes.length; },

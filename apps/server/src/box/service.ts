@@ -307,6 +307,18 @@ export class BoxService {
   }
 
   /**
+   * The docker CLI of this machine's box backend when it is a Docker engine
+   * (Docker Engine/Desktop, OrbStack, Rancher): runtimes that drive docker
+   * themselves (Claude Code, claude-code/runtime.ts) use the same engine.
+   * Null for the boxd backends (bubblewrap, the WSL distro, the VM), Podman and
+   * a CLI that needs leading arguments (a docker context, wsl.exe).
+   */
+  async dockerCli(): Promise<string | null> {
+    const runtime = await this.detect().catch(() => null);
+    return runtime?.ok && runtime.name === "docker" && !runtime.prefix?.length && !runtime.wsl ? runtime.bin : null;
+  }
+
+  /**
    * Save the machine's backend ("auto", one backend id, "native"). Projects
    * are planned again with it (a running box keeps going until its project
    * is planned again). Throws for an unknown value.
