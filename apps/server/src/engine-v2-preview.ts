@@ -37,7 +37,6 @@ const ENGINE_TOKEN_ENV = "OMNIRUSH_ACCESS_TOKEN";
 export const OMNIRUSH_SESSION_PLUGIN_ID = "omnirush.session";
 /** How long a prompt waits for a project's MCP servers to connect. */
 const MCP_READY_TIMEOUT_MS = 15_000;
-const MCP_TOOLS_SETTLE_MS = 750;
 // A cold sidecar can return HTTP 503 while its model catalog initializes for 17–20 seconds.
 const CATALOG_MIRROR_TIMEOUT_MS = 60_000;
 
@@ -339,7 +338,7 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
         });
         if (result.status < 200 || result.status >= 300) throw new Error(`OmniRush v2 MCP setup failed (${result.status})`);
       }));
-      // The first prompt waits (bounded) for the servers to connect, or its turn would have no MCP tools.
+      // The first prompt waits (bounded) for the servers to connect: from engine r4 on, "connected" means their tools are ready.
       const deadline = Date.now() + MCP_READY_TIMEOUT_MS;
       while (Object.keys(desired).length > 0 && Date.now() < deadline) {
         const status = await active.fetchJson("/api/mcp", { directory, timeoutMs: 5_000 });
@@ -351,9 +350,6 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
         if (!waiting) break;
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
-      // The engine reports a server connected a moment before a new session gets its tools (measured on 2.0.32-r3).
-      // shortcut: a fixed settle; replace with an engine signal for "tools ready" if one is added.
-      if (Object.keys(desired).length > 0) await new Promise((resolve) => setTimeout(resolve, MCP_TOOLS_SETTLE_MS));
       mcpCleaned.add(directory);
     })();
     mcpInFlight.set(directory, pending);
