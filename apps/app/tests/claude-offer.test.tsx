@@ -84,7 +84,7 @@ test("native Claude save sends host authority and aborts the same registered tra
     invokeDesktop(command: string, input: unknown) {
       commands.push({command, input});
       if (command === "__downloadClaudeArchive") return refuseExport
-        ? Promise.resolve({status: 409, statusText: "Conflict", headers: [], path: null, bytes: 0, body: JSON.stringify({message: "Another process is using this session or its operation owner is unknown"})})
+        ? Promise.resolve({status: 409, statusText: "Conflict", headers: [], path: null, bytes: 0, body: JSON.stringify({code: "session_in_use", message: "Another process is using this session or its operation owner is unknown"})})
         : pending;
       if (command === "__cancelTransfer") { rejectDownload(new DOMException("Cancelled", "AbortError")); return Promise.resolve(true); }
       throw new Error(`Unexpected native operation: ${command}`);

@@ -50,6 +50,28 @@ test("Claude archive cancellation before or during the dialog never starts a fet
   });
 });
 
+test("Claude archive conflict preserves the safe response body without creating a destination", async () => {
+  await withWorkspace(async (root, stagingDir) => {
+    const body = JSON.stringify({code: "session_in_use", message: "Another process is using this session or its operation owner is unknown"});
+    const result = await downloadClaudeArchive({
+      url: "http://127.0.0.1:39876/workspace/project/claude/sessions/00000000-0000-4000-8000-000000000001/export",
+    }, {
+      localServerUrl: "http://127.0.0.1:39876", allowedUrlPrefixes: [], stagingDir,
+      chooseDestination: async filename => path.join(root, filename),
+      fetcher: async (_url, init) => {
+        assert.equal(init.method, "POST");
+        return new Response(body, {status: 409, headers: {"content-type": "application/json"}});
+      },
+    });
+    assert.equal(result.status, 409);
+    assert.equal(result.body, body);
+    assert.equal(result.path, null);
+    assert.equal(result.bytes, 0);
+    assert.deepEqual(await readdir(root), []);
+    await assert.rejects(readdir(stagingDir), {code: "ENOENT"});
+  });
+});
+
 test("Claude archive abort cancels a stalled stream and removes private staging bytes", {timeout: 5000}, async () => {
   await withWorkspace(async (root, stagingDir) => {
     const controller = new AbortController();

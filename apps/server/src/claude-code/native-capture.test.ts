@@ -10,6 +10,7 @@ import { ClaudeAccessError, ClaudeDeviceAccess } from "./access.js";
 import { CLAUDE_VERSION, MODEL } from "./sandbox-assets.js";
 import { SDK_INSTALL_PIN } from "./sandbox-lock.js";
 import { ClaudeRuntime } from "./runtime.js";
+import { ApiError } from "../errors.js";
 
 test("managed Claude availability requires an enabled compatible catalog, never just relay access", async () => {
   const valid = {enabled: true, version: CLAUDE_VERSION, sdk: SDK_INSTALL_PIN, models: [MODEL]};
@@ -595,8 +596,9 @@ test("canonical sealed archives resume native uploads, preserve ZIP bytes and ke
   expect(fs.readFileSync(path.join(stateDirectory, "upload-events.jsonl"), "utf8")).toContain("archive_manifest_members_mismatch");
 });
 
-function savedRuntimeFixture(access?: () => Promise<{owner: string; capabilities?: string[]}>) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "claude-offline-"))); roots.push(root);
+function savedRuntimeFixture(access?: () => Promise<{owner: string; capabilities?: string[]}>, runtimeSubdirectory = "") {
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "claude-offline-"))); roots.push(temp);
+  const root = path.join(temp, runtimeSubdirectory); fs.mkdirSync(root, {recursive: true});
   const owner = "local-owner", id = "00000000-0000-4000-8000-000000000001";
   const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
   const dir = path.join(root, hash(owner), id); fs.mkdirSync(path.join(dir, "images"), {recursive: true});
@@ -639,11 +641,66 @@ test("offline export refuses live and unknown lock owners without clearing their
   const f = savedRuntimeFixture(async () => ({owner: "local-owner"}));
   for (const owner of [{pid: process.pid, nonce: "live"}, {pid: 0, nonce: "unknown"}, {pid: "bad"}, {pid: process.pid, nonce: "live", identity: {boot: "unverifiable"}}]) {
     const lock = JSON.stringify(owner); fs.writeFileSync(path.join(f.dir, "operation.lock"), lock);
-    await expect(f.runtime.export(f.id)).rejects.toThrow();
+    const error = await f.runtime.export(f.id).catch(error => error);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({status: 409, code: "session_in_use", message: "Another process is using this session or its operation owner is unknown", details: undefined});
     expect(fs.readFileSync(path.join(f.dir, "operation.lock"), "utf8")).toBe(lock);
     expect(fs.existsSync(path.join(f.dir, `${f.id}.zip`))).toBe(false);
   }
 });
+
+test("Claude HTTP export preserves operation-owner conflicts and masks unexpected failures", async () => {
+  const {startServer} = await import("../server.js");
+  const {TokenService} = await import("../tokens.js");
+  const f = savedRuntimeFixture(undefined, "claude-sessions");
+  const serverRoot = path.dirname(f.root), workspace = path.join(serverRoot, "workspace");
+  fs.mkdirSync(workspace, {recursive: true});
+  const dir = f.dir;
+  const priorEnv = new Map<string, string | undefined>();
+  const overrides = {
+    OMNIRUSH_DATA_DIR: path.join(serverRoot, "data"), OMNIRUSH_TOKEN_STORE: path.join(serverRoot, "tokens.json"),
+    OMNIRUSH_RUNTIME_DB: path.join(serverRoot, "runtime.sqlite"),
+    OMNIRUSH_GATEWAY_URL: "", OMNIRUSH_ACCESS_TOKEN: "", OMNIRUSH_REFRESH_TOKEN: "",
+  };
+  for (const [key, value] of Object.entries(overrides)) { priorEnv.set(key, process.env[key]); process.env[key] = value; }
+  let server: Awaited<ReturnType<typeof startServer>> | undefined;
+  try {
+    const config: import("../types.js").ServerConfig = {
+      host: "127.0.0.1", port: 0, configPath: path.join(serverRoot, "server.json"),
+      token: "fixture-collaborator-token", hostToken: "fixture-host-token", approval: {mode: "auto", timeoutMs: 1000}, corsOrigins: [],
+      workspaces: [{id: "workspace", name: "Fixture", path: workspace, preset: "starter", workspaceType: "local"}],
+      authorizedRoots: [workspace], readOnly: false, startedAt: Date.now(), tokenSource: "cli", hostTokenSource: "cli", logFormat: "pretty", logRequests: false,
+    };
+    const ownerToken = await new TokenService(config).create("owner");
+    server = await startServer(config);
+    const url = `http://127.0.0.1:${server.port}/workspace/workspace/claude/sessions/${f.id}/export`;
+    const request = () => fetch(url, {method: "POST", headers: {authorization: `Bearer ${ownerToken.token}`}, signal: AbortSignal.timeout(5000)});
+    const lockFile = path.join(dir, "operation.lock"), state = fs.readFileSync(path.join(dir, "session.json")), manifest = fs.readFileSync(path.join(dir, "native/manifest.json"));
+    for (const owner of [{pid: process.pid, nonce: "live-private-canary"}, {pid: 0, nonce: "unknown-private-canary"}]) {
+      const lock = JSON.stringify(owner); fs.writeFileSync(lockFile, lock);
+      const response = await request();
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({code: "session_in_use", message: "Another process is using this session or its operation owner is unknown"});
+      expect(fs.readFileSync(lockFile, "utf8")).toBe(lock);
+      expect(fs.existsSync(path.join(dir, `${f.id}.zip`))).toBe(false);
+      expect(fs.readFileSync(path.join(dir, "session.json"))).toEqual(state);
+      expect(fs.readFileSync(path.join(dir, "native/manifest.json"))).toEqual(manifest);
+    }
+    fs.writeFileSync(lockFile, "{private-unexpected-error-canary");
+    const unexpected = await request();
+    expect(unexpected.status).toBe(500);
+    expect(await unexpected.json()).toEqual({code: "internal_error", message: "Unexpected server error"});
+    expect(fs.readFileSync(lockFile, "utf8")).toBe("{private-unexpected-error-canary");
+    fs.unlinkSync(lockFile);
+    const exported = await request();
+    expect(exported.status).toBe(200);
+    expect(exported.headers.get("content-type")).toBe("application/zip");
+    expect(Buffer.from(await exported.arrayBuffer())).toEqual(fs.readFileSync(path.join(dir, `${f.id}.zip`)));
+  } finally {
+    await server?.stop();
+    for (const [key, value] of priorEnv) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  }
+}, 15_000);
 
 test("offline lookup rejects owner and session path mismatches, ambiguous IDs and symlink escapes", async () => {
   const f = savedRuntimeFixture(async () => ({owner: f.owner}));

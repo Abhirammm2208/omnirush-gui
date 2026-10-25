@@ -20,6 +20,7 @@ import { zipDirectory } from "./zip.js";
 import { REPLAY_ADAPTER } from "./replay-adapter.js";
 import { writeBundleManifest } from "./bundle-manifest.js";
 import { ClaudeAccessError, claudeResponseHeaders } from "./access.js";
+import { ApiError } from "../errors.js";
 
 export type ClaudeBudgetSnapshot = {
   status: "known" | "unknown"; model: string; revision?: string;
@@ -794,7 +795,7 @@ export class ClaudeRuntime {
         if (fs.existsSync(file)) {
           this.localPath(file, false);
           const bytes = fs.readFileSync(file, "utf8"), prior: unknown = JSON.parse(bytes);
-          if (!deadLockOwner(prior)) throw new Error("Another process is using this session or its operation owner is unknown");
+          if (!deadLockOwner(prior)) throw new ApiError(409, "session_in_use", "Another process is using this session or its operation owner is unknown");
           fs.unlinkSync(file);
         }
       }
