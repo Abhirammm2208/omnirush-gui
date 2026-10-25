@@ -71,6 +71,10 @@ export interface EngineV2Preview {
   setEnabled(enabled: boolean): Promise<EngineV2PreviewStatus>;
   setChatRouting(chatRouting: boolean): Promise<EngineV2PreviewStatus>;
   connection(): { url: string; username: string; password: string } | undefined;
+  /** The connection once the engine is up, waiting while it starts (at most `timeoutMs`); null when it is not up by then or its start failed. */
+  awaitConnection(timeoutMs: number): Promise<{ url: string; username: string; password: string } | null>;
+  /** The account's providers and model catalog again (a catalog change); resolves once the engine has them. */
+  refreshProviders(): Promise<void>;
   ensureWorkspaceReady(directory: string): Promise<void>;
   syncWorkspaceMcp(workspaceId: string, directory: string): Promise<void>;
   /** Whether a chat came from the 1.x store (engine-v2-migration.ts). */
@@ -276,6 +280,32 @@ export async function assertSessionPluginActive(
   const state = isRecord(ours) ? (isRecord(ours.state) ? ours.state.status ?? ours.state.type : ours.state) : undefined;
   if (response.status !== 200 || !ours || (state !== undefined && !["active", "loaded", "ready"].includes(String(state)))) {
     throw new Error("The OmniRush engine's session plugin is not active; chats cannot start.");
+  }
+}
+
+/**
+ * Waits for `probe.connection()` while the engine starts: re-checked when its start settles and every
+ * `pollMs`, `timeoutMs` at most. Null when the time ran out, or no start is under way and the last one failed.
+ */
+export async function awaitEngineConnection<T>(
+  probe: { connection(): T | undefined; starting(): Promise<unknown> | undefined; failed(): boolean },
+  timeoutMs: number,
+  pollMs = 100,
+): Promise<T | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const ready = probe.connection();
+    if (ready) return ready;
+    const left = deadline - Date.now();
+    if (left <= 0) return null;
+    const starting = probe.starting();
+    if (!starting && probe.failed()) return null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      ...(starting ? [starting.then(() => undefined, () => undefined)] : []),
+      new Promise<void>((resolveTick) => { timer = setTimeout(resolveTick, Math.min(pollMs, left)); }),
+    ]);
+    clearTimeout(timer);
   }
 }
 
@@ -634,9 +664,24 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
     await stopRuntime();
   }
 
+  function awaitConnection(timeoutMs: number) {
+    return awaitEngineConnection({
+      connection,
+      starting: () => startPromise,
+      // Turned off, stopped, or its last start failed (recordStartError): nothing to wait for.
+      failed: () => !enabled || !allowRunning || (!running && lastError !== undefined),
+    }, timeoutMs);
+  }
+
+  async function refreshProviders(): Promise<void> {
+    if (!sidecar) return;
+    scheduleMirror();
+    if (mirrorInFlight) await mirrorInFlight;
+  }
+
   function startWhenReady(): void {
     if (enabled) void start().catch(recordStartError);
   }
   if (!options.deferStart) startWhenReady();
-  return { start: startWhenReady, status, setEnabled, setChatRouting, connection, ensureWorkspaceReady, syncWorkspaceMcp, migratedFromV1: (id) => migrated.has(id), stop };
+  return { start: startWhenReady, status, setEnabled, setChatRouting, connection, awaitConnection, refreshProviders, ensureWorkspaceReady, syncWorkspaceMcp, migratedFromV1: (id) => migrated.has(id), stop };
 }

@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
+  awaitEngineConnection,
   createEngineV2Preview,
   mapRuntimeProvidersToV2Specs,
   readEngineV2PreviewState,
@@ -12,6 +13,9 @@ import {
   writeEngineV2PreviewState,
 } from "./engine-v2-preview.js";
 import type { ServerConfig } from "./types.js";
+import { engineV2Root } from "./engine-v2-migration.js";
+import { builtinOmniRushModelCatalog, writeOmniRushModelCatalog } from "./omnirush-model-catalog.js";
+import { runtimeStorageDir } from "./runtime-db.js";
 import { buildOmniRushV2Instructions, waitForOmniRushV2Skills } from "./opencode-v2-instructions.js";
 
 const realV2Binary = process.env.OMNIRUSH_OPENCODE2_BIN?.trim()
@@ -269,3 +273,70 @@ test("null or empty native endpoint overrides cannot bypass catalog origin valid
     expect(result.specs).toEqual([]);
   }
 });
+
+test("a request sent while the engine starts gets its connection once the engine is up", async () => {
+  let up: { url: string } | undefined;
+  let finish!: () => void;
+  const starting = new Promise<void>((resolveStart) => { finish = () => { up = { url: "http://127.0.0.1:4097" }; resolveStart(); }; });
+  setTimeout(finish, 150);
+  const began = Date.now();
+  const connection = await awaitEngineConnection({ connection: () => up, starting: () => (up ? undefined : starting), failed: () => false }, 5_000);
+  expect(connection).toEqual({ url: "http://127.0.0.1:4097" });
+  expect(Date.now() - began).toBeLessThan(2_000);
+  // Before the start began (the server starts the engine after its routes): polled until it is up.
+  let later: { url: string } | undefined;
+  setTimeout(() => { later = { url: "http://127.0.0.1:4098" }; }, 120);
+  expect(await awaitEngineConnection({ connection: () => later, starting: () => undefined, failed: () => false }, 5_000, 20)).toEqual({ url: "http://127.0.0.1:4098" });
+});
+
+test("an engine that never starts, or whose start failed, gives no connection within the bound", async () => {
+  const began = Date.now();
+  expect(await awaitEngineConnection({ connection: () => undefined, starting: () => new Promise<never>(() => undefined), failed: () => false }, 300, 50)).toBeNull();
+  const waited = Date.now() - began;
+  expect(waited).toBeGreaterThanOrEqual(250);
+  expect(waited).toBeLessThan(1_500);
+  const failedAt = Date.now();
+  expect(await awaitEngineConnection({ connection: () => undefined, starting: () => undefined, failed: () => true }, 5_000)).toBeNull();
+  expect(Date.now() - failedAt).toBeLessThan(500);
+});
+
+realV2Test("a request during start waits for the engine, and a catalog change brings its models to the running engine", async () => {
+  const root = await mkdtemp(join(tmpdir(), "omnirush-engine-v2-catalog-"));
+  const previousBinary = process.env.OMNIRUSH_OPENCODE2_BIN;
+  const config: ServerConfig = {
+    ...testConfig(root),
+    port: 9,
+    omnirushGatewayCredentials: { gatewayUrl: "https://gateway.invalid", accessToken: "a", refreshToken: "r" },
+    omnirushEngineToken: "engine-token",
+  };
+  await writeEngineV2PreviewState(config, { enabled: true, chatRouting: false });
+  process.env.OMNIRUSH_OPENCODE2_BIN = realV2Binary;
+  const preview = createEngineV2Preview({ config, deferStart: true });
+  const engineModels = async () => {
+    const written = JSON.parse(await readFile(join(engineV2Root(runtimeStorageDir(config)), "config", "opencode.json"), "utf8"));
+    return Object.keys(written.providers?.omnirush?.models ?? {}).sort();
+  };
+  try {
+    preview.start();
+    // Sent while it starts: answered once the engine is up, not refused.
+    const connection = await preview.awaitConnection(60_000);
+    expect(connection?.url).toMatch(/^http:\/\/127\.0\.0\.1:/);
+    // Before the first catalog sync: the built-in catalog.
+    expect(await engineModels()).toEqual(["gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol"]);
+    const synced = builtinOmniRushModelCatalog();
+    synced.push({ ...synced[0]!, id: "kimi-k3.1-pro", display_name: "Kimi K3.1 Pro", family: "Kimi", default: false });
+    await writeOmniRushModelCatalog(config, synced);
+    await preview.refreshProviders();
+    expect(await engineModels()).toEqual(["gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "kimi-k3.1-pro"]);
+    // Under the gateway provider (our broker's address), the only one the engine may use.
+    const written = JSON.parse(await readFile(join(engineV2Root(runtimeStorageDir(config)), "config", "opencode.json"), "utf8"));
+    expect(Object.keys(written.providers)).toEqual(["omnirush"]);
+    expect(written.providers.omnirush.settings.baseURL).toBe("http://127.0.0.1:9/omnirush-gateway/v1");
+    expect(preview.status().catalogModelIds).toContain("kimi-k3.1-pro");
+  } finally {
+    await preview.stop();
+    if (previousBinary === undefined) delete process.env.OMNIRUSH_OPENCODE2_BIN;
+    else process.env.OMNIRUSH_OPENCODE2_BIN = previousBinary;
+    await rm(root, { recursive: true, force: true });
+  }
+}, 120_000);

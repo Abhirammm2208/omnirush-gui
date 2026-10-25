@@ -306,6 +306,8 @@ async function capturePermissionMode(config: ServerConfig): Promise<ApprovalMode
 
 /** Automatic compaction (session-archive/auto-compact.ts), one per server: its counts live as long as the app. */
 const autoCompactorsByServer = new WeakMap<ServerConfig, AutoCompactor>();
+/** How long a request waits for the 2.x engine while it starts (its boot timeout, managed-opencode-v2.ts). */
+const ENGINE_V2_START_WAIT_MS = 60_000;
 const engineV2ByServer = new WeakMap<ServerConfig, EngineV2Preview>();
 const editorLspByServer = new WeakMap<ServerConfig, ReturnType<typeof createEditorLsp>>();
 function editorLspFor(config: ServerConfig): ReturnType<typeof createEditorLsp> {
@@ -1724,9 +1726,12 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
           await managedDesktopPolicy(config).assertRequest(request, mount.restPath, true);
           await assertProxiedEngineRequestWithinProviderLock(request, mount.restPath);
           const workspace = await resolveWorkspaceWithoutBootstrap(config, mount.workspaceId);
-          const connection = engineV2Preview.connection();
+          // Right after the app starts the engine may still be starting: the request waits for it (bounded).
+          const connection = await engineV2Preview.awaitConnection(ENGINE_V2_START_WAIT_MS);
           if (!connection) {
-            return finalize(jsonResponse({ error: "engine_v2_preview_not_running" }, 503));
+            const notRunning = jsonResponse({ error: "engine_v2_preview_not_running", retryable: true, message: "The engine is not running yet. Try again in a moment." }, 503);
+            notRunning.headers.set("Retry-After", "5");
+            return finalize(notRunning);
           }
           assertEngineStartedWithinLock(connection.url, request.method, mount.restPath);
           proxyService = "opencode";
@@ -1997,6 +2002,8 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     config,
     broker: gatewayBroker,
     reloadEngine: async () => {
+      // The 2.x engine runs every chat: it gets the new models from its providers (engine-v2-preview.ts mirror).
+      await engineV2Preview.refreshProviders();
       if (config.workspaces.length === 0) return;
       await reloadOpencodeEngine(config, resolveEngineRuntimeWorkspace(config), engineMcpServerState, {
         forceStandby: true,
