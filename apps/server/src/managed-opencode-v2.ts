@@ -104,8 +104,11 @@ export async function pluginDirectories(root: string, modules: string[]): Promis
  * listed MCP servers. The engine fails open without the gate variables, so the spawn is refused when
  * they are missing.
  */
+/** The app's gateway provider: the only one the engine may use (its gate, and the config's policies). */
+const GATEWAY_PROVIDER_ID = "omnirush";
+
 export function engineV2SpawnEnv(env: Record<string, string>, mcp: readonly string[] = []): Record<string, string> {
-  return assertEngineGates({ ...env, ...gateEnv({ provider: "omnirush", mcp }) });
+  return assertEngineGates({ ...env, ...gateEnv({ provider: GATEWAY_PROVIDER_ID, mcp }) });
 }
 
 export function assertEngineGates(env: Record<string, string | undefined>): Record<string, string> {
@@ -291,6 +294,12 @@ export async function createManagedOpencodeV2Server(
       share: "disabled",
       update: "disable",
       providers: providerConfig,
+      // As the CLI's v2 config (engine-v2.js toV2Config): only the app's gateway provider may run a model,
+      // beside the engine's gate (OMNIRUSH_GATE_PROVIDERS, engineV2SpawnEnv), which no config can widen.
+      policies: [
+        { action: "provider.use", resource: "*", effect: "deny" },
+        { action: "provider.use", resource: GATEWAY_PROVIDER_ID, effect: "allow" },
+      ],
       ...(options.permissions ? { permissions: await options.permissions() } : {}),
       // On: the stock websearch tool searches through Exa (the engine's keyless default), like the CLI.
       // Off: no provider is picked (never `false`, which would take the tool out of the stock list).

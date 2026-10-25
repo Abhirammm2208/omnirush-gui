@@ -54,6 +54,11 @@ posix("the stock websearch tool searches through Exa only while the server's swi
       const config = JSON.parse(await readFile(join(rootDir, "config", "opencode.json"), "utf8"));
       expect(config.websearch).toEqual(on ? { provider: "exa" } : undefined);
       expect(config).toMatchObject({ share: "disabled", update: "disable" });
+      // Only the gateway provider may run a model (the CLI's policies), beside the gate env.
+      expect(config.policies).toEqual([
+        { action: "provider.use", resource: "*", effect: "deny" },
+        { action: "provider.use", resource: "omnirush", effect: "allow" },
+      ]);
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
