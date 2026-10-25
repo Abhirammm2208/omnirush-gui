@@ -214,6 +214,7 @@ import { isOmniRushUiMcpRegistryEntry } from "./omnirush-ui-mcp-command.js";
 import { describeIgnored, type McpAllowEntry } from "./mcp-allow/mcp-allow.mjs";
 import { omnirushModelWantsReasoningSummary, readOmniRushModelCatalog } from "./omnirush-model-catalog.js";
 import { modelAllowedIn, modelModes, projectMode, serverModelStart } from "./model-modes/model-modes.mjs";
+import { switchableModels } from "./model-modes/strict-sessions.mjs";
 import { serverLocalBox } from "./box/launch.js";
 import {
   SUBAGENT_MODEL_FALLBACK_TRACE,
@@ -1290,6 +1291,8 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
       const entry = (await readOmniRushModelCatalog(config)).find((candidate) => candidate.id === model);
       return !entry || modelAllowedIn(entry, projectMode(box));
     },
+    // A chat may switch between the models of one provider (the catalog's switch_group).
+    switchable: async (bound, asked) => switchableModels(await readOmniRushModelCatalog(config), bound, asked),
     // Strict sessions: a chat's bind names the box revision it started under.
     chatPin: (sessionId) => boxServiceFor(config).chatPin(sessionId),
     // The capture policy the server stored for a chat: its pin and its uploads keep that one.
@@ -4626,6 +4629,8 @@ function createRoutes(
         efforts: model.reasoning_levels,
         // Where the model may run: "native" (projects without the sandbox), "box" (sandbox projects).
         modes: modelModes(model),
+        // The provider a chat may switch within (model-modes/strict-sessions.mjs); none: a new chat.
+        ...(model.switch_group ? { switch_group: model.switch_group } : {}),
       })),
     });
   });

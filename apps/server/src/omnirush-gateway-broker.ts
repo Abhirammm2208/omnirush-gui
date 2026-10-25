@@ -94,6 +94,12 @@ type BrokerOptions = {
    * is never sent. Unset: every model goes to the gateway, which judges.
    */
   modelInMode?: (model: string, box: boolean) => boolean | Promise<boolean>;
+  /**
+   * Whether a chat on `bound` may go on with `asked`: two catalog models of
+   * one provider (the catalog's switch_group, model-modes/strict-sessions.mjs).
+   * Unset: only the same model.
+   */
+  switchable?: (bound: string, asked: string) => boolean | Promise<boolean>;
   /** The pause before a busy picked model is tried once more; tests shrink it. */
   subagentRetryDelayMs?: number;
   /** Whether a picked sub-agent model is in its refusal cooldown (sent straight to the main model). */
@@ -1342,6 +1348,7 @@ export class OmniRushGatewayBroker {
   private readonly subagentRetryDelayMs: number;
   private readonly subagentModelRefused?: (model: string) => boolean;
   private readonly modelInMode?: BrokerOptions["modelInMode"];
+  private readonly switchable: NonNullable<BrokerOptions["switchable"]>;
   /**
    * Chats seen with X-OmniRush-Box (the box engine plugin marks a box chat's
    * requests): a later request of one without the mark (a compaction, a side
@@ -1432,6 +1439,7 @@ export class OmniRushGatewayBroker {
     this.subagentRetryDelayMs = options.subagentRetryDelayMs ?? SUBAGENT_RETRY_DELAY_MS;
     this.subagentModelRefused = options.subagentModelRefused;
     this.modelInMode = options.modelInMode;
+    this.switchable = options.switchable ?? ((bound, asked) => bound === asked);
     this.onUpdateSignal = options.onUpdateSignal;
     this.chatPin = options.chatPin;
     this.bindSession = this.makeBinder(options.bindTimeoutMs);
@@ -2131,7 +2139,7 @@ export class OmniRushGatewayBroker {
       }
     }
     // One model per chat: a main chat's agent request on another model than its first is refused here.
-    const fixed = this.fixedModelRefusal(request, path, body);
+    const fixed = await this.fixedModelRefusal(request, path, body);
     if (fixed) return fixed;
     // The last capabilities answer's switch (this server's, kept on disk until it answers): a model request never waits for one.
     // The switch not known yet (capabilities failed, nothing kept): asked again, bounded, before this request.
@@ -2215,10 +2223,12 @@ export class OmniRushGatewayBroker {
   }
 
   /**
-   * Every context-bearing request keeps the chat's model, including summaries,
-   * compaction and children. A different model never reaches the gateway.
+   * Every context-bearing request keeps the chat's provider, including
+   * summaries, compaction and children: a model of another provider never
+   * reaches the gateway. One of the same provider (`switchable`) goes as asked;
+   * the chat's pin keeps its first model.
    */
-  private fixedModelRefusal(request: Request, path: string, body: ArrayBuffer | string | undefined): Response | null {
+  private async fixedModelRefusal(request: Request, path: string, body: ArrayBuffer | string | undefined): Promise<Response | null> {
     if (body === undefined || (path !== "responses" && path !== "responses/compact")) return null;
     const session = request.headers.get("x-omnirush-session-id");
     if (!session) return request.headers.has(PARENT_SESSION_HEADER) || request.headers.has(SUBAGENT_ROOT_SESSION_HEADER)
@@ -2234,7 +2244,8 @@ export class OmniRushGatewayBroker {
     const model = parsed.model.replace(/^omnirush\//, "");
     const parents = [request.headers.get(SUBAGENT_ROOT_SESSION_HEADER), request.headers.get(PARENT_SESSION_HEADER)].filter((id): id is string => Boolean(id));
     const pins = [session, ...parents].map(id => this.sessionModels.get(id)).filter((pin): pin is string => Boolean(pin));
-    const first = pins.find(pin => pin !== model);
+    let first: string | undefined;
+    for (const pin of pins) if (!(await this.switchable(pin, model))) { first = pin; break; }
     if (!first && !parents.some(id => !this.sessionModels.has(id))) {
       if (this.sessionModels.has(session)) return null;
       if (this.sessionModelsFile) {
@@ -2246,7 +2257,7 @@ export class OmniRushGatewayBroker {
       this.sessionModels.set(session, model);
       return null;
     }
-    this.log?.("info", "omnirush.ai chat model change refused (one model per chat)", { first, model });
+    this.log?.("info", "omnirush.ai chat model change refused (another provider)", { first, model });
     return Response.json({ detail: SESSION_MODEL_FIXED, error: { type: "invalid_request_error", code: SESSION_MODEL_FIXED, message: first ? `This chat runs on ${first}. Start a new chat to use ${model}.` : "Resume the parent chat before continuing this sub-agent; its fixed model is unavailable." } }, { status: 400, headers: { "x-should-retry": "false", [REFUSED_HEADER]: "1" } });
   }
 

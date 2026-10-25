@@ -2865,7 +2865,7 @@ export function SessionRoute() {
   };
   const handleModelPick = (next: ModelRef, sessionId: string | null): boolean => {
     const current = sessionId ? getSessionModelSelection(sessionId)?.model ?? null : null;
-    const pick = decideModelPick({ next, current, started: Boolean(sessionId && chatStarted(sessionId)), claude: useClaudeModels.getState() });
+    const pick = decideModelPick({ next, current, started: Boolean(sessionId && chatStarted(sessionId)), claude: useClaudeModels.getState(), switchable: modelModesRef.current.switchable });
     if (pick.kind === "unavailable") toast(pick.message, { id: `claude-unavailable:${next.modelID}` });
     else if (pick.kind === "new_chat" && current) setNewChatOffer({ next, current });
     else if (pick.kind === "claude") openClaudeChat(next);
@@ -2897,7 +2897,7 @@ export function SessionRoute() {
     behavior?: { value: string | null },
   ) => {
     const explicitBehavior = behavior !== undefined;
-    // One model per chat (a started chat offers a new one), and Claude opens its own chat.
+    // One provider per chat (a started chat offers a new one for another provider), and Claude opens its own chat.
     if (modelPickRef.current(next, targetSessionId)) return;
     useModelCollectionsStore.getState().recordRecent(next);
     if (targetSessionId) {

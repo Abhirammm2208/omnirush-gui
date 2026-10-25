@@ -24,6 +24,8 @@ export type StrictSessions = { mode: "observe" | "enforce"; path: string; header
 export type BindPost = (path: string, body: Record<string, unknown>, signal: AbortSignal) => Promise<{ status: number; body: unknown }>;
 
 export function strictSessions(capabilities: unknown): StrictSessions | null;
-export function bindingConflictMessage(binding: unknown, model: string): string;
+export function switchGroup(entry: unknown): string | null;
+export function switchableModels(catalog: unknown, bound: string, asked: string): boolean;
+export function bindingConflictMessage(binding: unknown, model: string, mode?: string | null): string;
 export function modelUsedMessage(modelsUsed: unknown, model: string): string;
 export function sessionBinder(post: BindPost, options?: { timeoutMs?: number }): ((chat: BindChat) => Promise<BindOutcome>) & { forget(id: string): void };
