@@ -108,7 +108,7 @@ export function reduceQueuedDrain(state: QueuedDrainState, event: QueuedDrainEve
       // A replacement may already hold the send slot while awaiting Stop.
       // Keep that claim, but discard activity belonging to its predecessor.
       if (phase.kind === "sending") return { ...state, phase: { ...phase, busySeen: false } };
-      if (phase.kind === "admission_unknown") return state;
+      // A confirmed Stop settles an unknown admission too: nothing is resent.
       return { ...INITIAL_QUEUED_DRAIN_STATE, lastResolution: state.lastResolution };
     case "send_started": {
       if (phase.kind !== "ready") {

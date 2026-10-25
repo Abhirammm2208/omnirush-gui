@@ -590,9 +590,10 @@ describe("native Stop and follow-up handoff", () => {
     });
   });
 
-  test("unknown admission stays fenced even after the visible run stops", async () => {
+  test("a confirmed stop clears an unknown admission without resending it", async () => {
     const root = { ...session, id: "ses_unknown_stop" };
     let sends = 0;
+    let stopped = false;
     await withSessionFetch((request) => {
       const path = new URL(request.url).pathname;
       if (path.endsWith(`/session/${root.id}`)) return Response.json(root);
@@ -602,13 +603,13 @@ describe("native Stop and follow-up handoff", () => {
       throw new Error(`Unexpected request: ${request.method} ${path}`);
     }, async (requests) => {
       const client = createClient(endpoint.opencodeBaseUrl, root.directory);
-      await expect(interruptSessionTurn(endpoint.opencodeBaseUrl, client, root.id, root.directory, { admissionUnknown: true }))
-        .rejects.toThrow("acceptance is still unknown");
-      await expect(submitAfterInterruption(endpoint.opencodeBaseUrl, root.id, async () => { sends += 1; }))
-        .rejects.toThrow("acceptance is still unknown");
-      expect(sends).toBe(0);
+      await interruptSessionTurn(endpoint.opencodeBaseUrl, client, root.id, root.directory, { onStopped: () => { stopped = true; } });
+      expect(stopped).toBe(true);
+      expect(sessionNeedsStop(endpoint.opencodeBaseUrl, root.id)).toBe(false);
+      // Only the two aborts; the unknown prompt is never replayed.
       expect(requests.filter((request) => request.method === "POST")).toHaveLength(2);
-      expect(sessionNeedsStop(endpoint.opencodeBaseUrl, root.id)).toBe(true);
+      await submitAfterInterruption(endpoint.opencodeBaseUrl, root.id, async () => { sends += 1; });
+      expect(sends).toBe(1);
     });
   });
 
