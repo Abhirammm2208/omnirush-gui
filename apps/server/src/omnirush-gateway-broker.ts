@@ -16,7 +16,7 @@ import { builtinOmniRushModelCatalog, omnirushModelWantsReasoningSummary } from 
 import { RejectedAttachments, isRejectedAttachmentError, type Attachment } from "./rejected-attachments.js";
 import { gatewayUrlAllowed, RELEASE_GATEWAY_ERROR } from "./release-guard.js";
 import { BOX_HEADER, MODEL_NOT_IN_MODE, notInModeMessage, projectMode } from "./model-modes/model-modes.mjs";
-import { MODE_NOT_BOUND, MODEL_NOT_BOUND, SESSION_BIND_UNCONFIRMED, STRICT_SESSION_HEADER, SESSION_BINDING_CONFLICT, SESSION_MODEL_USED, VERIFICATION_REQUIRED, sessionBinder, strictSessions, type StrictSessions } from "./model-modes/strict-sessions.mjs";
+import { MODE_NOT_BOUND, MODEL_NOT_BOUND, REFUSED_HEADER, SESSION_BIND_UNCONFIRMED, STRICT_SESSION_HEADER, SESSION_BINDING_CONFLICT, SESSION_MODEL_USED, VERIFICATION_REQUIRED, sessionBinder, strictSessions, type StrictSessions } from "./model-modes/strict-sessions.mjs";
 import { ClaudeDeviceAccess, type ClaudeDeviceRequest } from "./claude-code/access.js";
 import type { ClaudeAuthorization } from "./claude-code/runtime.js";
 
@@ -2086,7 +2086,7 @@ export class OmniRushGatewayBroker {
       if (model && !(await this.modelInMode(model, this.boxRequest(request)))) {
         this.log?.("info", "omnirush.ai model not available in this chat's mode; not sent", { model, box: this.boxRequest(request), clientRequestId: requestId });
         const message = notInModeMessage(projectMode(this.boxRequest(request)));
-        return Response.json({ detail: MODEL_NOT_IN_MODE, error: { type: "invalid_request_error", code: MODEL_NOT_IN_MODE, message } }, { status: 400, headers: { "x-should-retry": "false" } });
+        return Response.json({ detail: MODEL_NOT_IN_MODE, error: { type: "invalid_request_error", code: MODEL_NOT_IN_MODE, message } }, { status: 400, headers: { "x-should-retry": "false", [REFUSED_HEADER]: "1" } });
       }
     }
     // One model per chat: a main chat's agent request on another model than its first is refused here.
@@ -2181,7 +2181,7 @@ export class OmniRushGatewayBroker {
     if (body === undefined || (path !== "responses" && path !== "responses/compact")) return null;
     const session = request.headers.get("x-omnirush-session-id");
     if (!session) return request.headers.has(PARENT_SESSION_HEADER) || request.headers.has(SUBAGENT_ROOT_SESSION_HEADER)
-      ? Response.json({error: {type: "invalid_request_error", code: SESSION_MODEL_FIXED, message: "A sub-agent request must name its session and pinned parent."}}, {status: 400, headers: {"x-should-retry": "false"}})
+      ? Response.json({error: {type: "invalid_request_error", code: SESSION_MODEL_FIXED, message: "A sub-agent request must name its session and pinned parent."}}, {status: 400, headers: {"x-should-retry": "false", [REFUSED_HEADER]: "1"}})
       : null;
     let parsed: unknown;
     try {
@@ -2189,7 +2189,7 @@ export class OmniRushGatewayBroker {
     } catch {
       return null;
     }
-    if (!isRecord(parsed) || typeof parsed.model !== "string" || !parsed.model.replace(/^omnirush\//, "").trim()) return Response.json({error: {type: "invalid_request_error", code: SESSION_MODEL_FIXED, message: "A session request must name its fixed model."}}, {status: 400, headers: {"x-should-retry": "false"}});
+    if (!isRecord(parsed) || typeof parsed.model !== "string" || !parsed.model.replace(/^omnirush\//, "").trim()) return Response.json({error: {type: "invalid_request_error", code: SESSION_MODEL_FIXED, message: "A session request must name its fixed model."}}, {status: 400, headers: {"x-should-retry": "false", [REFUSED_HEADER]: "1"}});
     const model = parsed.model.replace(/^omnirush\//, "");
     const parents = [request.headers.get(SUBAGENT_ROOT_SESSION_HEADER), request.headers.get(PARENT_SESSION_HEADER)].filter((id): id is string => Boolean(id));
     const pins = [session, ...parents].map(id => this.sessionModels.get(id)).filter((pin): pin is string => Boolean(pin));
@@ -2206,7 +2206,7 @@ export class OmniRushGatewayBroker {
       return null;
     }
     this.log?.("info", "omnirush.ai chat model change refused (one model per chat)", { first, model });
-    return Response.json({ detail: SESSION_MODEL_FIXED, error: { type: "invalid_request_error", code: SESSION_MODEL_FIXED, message: first ? `This chat runs on ${first}. Start a new chat to use ${model}.` : "Resume the parent chat before continuing this sub-agent; its fixed model is unavailable." } }, { status: 400, headers: { "x-should-retry": "false" } });
+    return Response.json({ detail: SESSION_MODEL_FIXED, error: { type: "invalid_request_error", code: SESSION_MODEL_FIXED, message: first ? `This chat runs on ${first}. Start a new chat to use ${model}.` : "Resume the parent chat before continuing this sub-agent; its fixed model is unavailable." } }, { status: 400, headers: { "x-should-retry": "false", [REFUSED_HEADER]: "1" } });
   }
 
   /**
@@ -2278,8 +2278,8 @@ export class OmniRushGatewayBroker {
     if (enforce && !this.bindsConfirmed.has(session)) this.uploadHold(session, "refused");
     this.log?.("info", "omnirush.ai refused this chat's binding; not sent", { code: outcome.refused.code });
     const { code, message, retry } = outcome.refused;
-    if (retry) return Response.json({ detail: code, error: { type: "server_error", code, message } }, { status: 503, headers: { "x-should-retry": "true" } });
-    return Response.json({ detail: code, error: { type: "invalid_request_error", code, message } }, { status: code === VERIFICATION_REQUIRED ? 403 : 400, headers: { "x-should-retry": "false" } });
+    if (retry) return Response.json({ detail: code, error: { type: "server_error", code, message } }, { status: 503, headers: { "x-should-retry": "true", [REFUSED_HEADER]: "1" } });
+    return Response.json({ detail: code, error: { type: "invalid_request_error", code, message } }, { status: code === VERIFICATION_REQUIRED ? 403 : 400, headers: { "x-should-retry": "false", [REFUSED_HEADER]: "1" } });
   }
 
   private uploadHold(sessionId: string, state: "pending" | "refused" | "confirmed"): void {

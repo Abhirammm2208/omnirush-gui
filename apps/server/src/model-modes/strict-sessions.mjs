@@ -33,6 +33,8 @@ export const BIND_TIMEOUT_MS = 5_000;
 export const VERIFICATION_MESSAGE = "Your account needs to be verified before it can use models. See https://omnirush.ai/console";
 export const SESSION_BIND_UNCONFIRMED = "session_bind_unconfirmed";
 export const UNCONFIRMED_MESSAGE = "Couldn't confirm this chat with the server. Try again.";
+/** Set on a refusal the client answers itself (or replays): no model saw the request. The engine keeps it with the error, so the server leaves that prompt out of the chat's turns. */
+export const REFUSED_HEADER = "x-omnirush-refused";
 const MODES = new Set(["off", "observe", "enforce"]);
 
 const PATH = /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;

@@ -110,6 +110,7 @@ describe("model modes", () => {
     expect((await b.handle(request({ model: "kimi-k3.1-pro", tools }, { "x-omnirush-session-id": "ses_one" }), "responses")).status).toBe(200);
     const refused = await b.handle(request({ model: "gpt-6-astra", tools }, { "x-omnirush-session-id": "ses_one" }), "responses");
     expect(refused.status).toBe(400);
+    expect(refused.headers.get("x-omnirush-refused")).toBe("1");
     expect(((await refused.json()) as { error: { code: string; message: string } }).error).toMatchObject({ code: "session_model_fixed", message: "This chat runs on kimi-k3.1-pro. Start a new chat to use gpt-6-astra." });
     expect((await b.handle(request({ model: "gpt-6-astra" }, { "x-omnirush-session-id": "ses_one" }), "responses")).status).toBe(400);
     expect((await b.handle(request({ model: "gpt-6-astra" }, { "x-omnirush-session-id": "ses_one" }, "responses/compact"), "responses/compact")).status).toBe(400);
