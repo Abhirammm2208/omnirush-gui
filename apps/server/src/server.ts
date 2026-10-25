@@ -2004,7 +2004,8 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     reloadEngine: async () => {
       // The 2.x engine runs every chat: it gets the new models from its providers (engine-v2-preview.ts mirror).
       await engineV2Preview.refreshProviders();
-      if (config.workspaces.length === 0) return;
+      // No 1.x engine runs chats then: its reload would fail and be retried every 15 s, re-mirroring each time.
+      if (config.workspaces.length === 0 || engineV2Preview.status().chatRouting) return;
       await reloadOpencodeEngine(config, resolveEngineRuntimeWorkspace(config), engineMcpServerState, {
         forceStandby: true,
         reason: "omnirush_model_catalog",
