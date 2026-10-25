@@ -352,16 +352,17 @@ async function captureChildSessions(input: {
    */
   progress?: TurnProgress | null;
   ahead?: boolean;
+  /** A 2.x engine: children listed by parentID, their stored messages read whole (engineMessagesV2). */
+  v2?: boolean;
 }): Promise<void> {
   if (input.depth > MAX_UPLOAD_CHILD_SESSION_DEPTH) return;
-  const children = await readEngineJson(input.fetchEngine, `/session/${encodeURIComponent(input.parentSessionId)}/children`, 1024 * 1024)
-    .catch(nullOnErrorStatus);
-  if (!Array.isArray(children)) return;
+  const children = await engineChildren(input.fetchEngine, input.parentSessionId, input.v2 === true);
+  if (!children) return;
   for (const child of children.slice(0, 200)) {
     const childId = isRecord(child) && typeof child.id === "string" && child.id ? child.id : null;
     if (!childId || childId === input.rootSessionId || input.visited.has(childId)) continue;
     input.visited.add(childId);
-    const history = await readEngineHistory(engineMessages(input.fetchEngine, `/session/${encodeURIComponent(childId)}/message`, true), input.checkpoints[childId])
+    const history = await readEngineHistory(engineMessages(input.fetchEngine, messagesPathOf(childId, input.v2 === true), input.v2 ? "v2" : true), input.checkpoints[childId])
       .catch(nullOnErrorStatus);
     if (input.ahead) {
       if (history && input.progress && history.omitted === 0 && !history.checkpointMissing) {
@@ -415,16 +416,15 @@ async function captureChildSessions(input: {
  * at most MAX_UPLOAD_CHILD_SESSION_DEPTH layers down. A layer the engine
  * cannot list (an error status) is left out.
  */
-async function childSessionIdsBelow(fetchEngine: EngineFetch, rootSessionId: string): Promise<string[]> {
+async function childSessionIdsBelow(fetchEngine: EngineFetch, rootSessionId: string, v2 = false): Promise<string[]> {
   const ids: string[] = [];
   const seen = new Set([rootSessionId]);
   let layer = [rootSessionId];
   for (let depth = 1; depth <= MAX_UPLOAD_CHILD_SESSION_DEPTH && layer.length > 0; depth += 1) {
     const next: string[] = [];
     for (const parent of layer) {
-      const children = await readEngineJson(fetchEngine, `/session/${encodeURIComponent(parent)}/children`, 1024 * 1024)
-        .catch(nullOnErrorStatus);
-      if (!Array.isArray(children)) continue;
+      const children = await engineChildren(fetchEngine, parent, v2);
+      if (!children) continue;
       for (const child of children.slice(0, 200)) {
         const id = isRecord(child) && typeof child.id === "string" && child.id ? child.id : null;
         if (!id || seen.has(id)) continue;
@@ -491,7 +491,9 @@ async function readObservedResponse(response: Response, maxBytes = MAX_ENGINE_RE
 
 /** One engine read under the cap; an error status throws EngineReadError. */
 async function readEngineJson(fetchEngine: EngineFetch, path: string, maxBytes?: number): Promise<unknown> {
-  const response = await fetchEngine(path);
+  // A query in `path` (`/api/session?parentID=…`) goes with the target's own search.
+  const [route, query] = path.split("?");
+  const response = await fetchEngine(route!, query ? Object.fromEntries(new URLSearchParams(query)) : undefined);
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined);
     throw new EngineReadError(response.status);
@@ -644,14 +646,56 @@ function rewritten(path: string, message: unknown): unknown {
 }
 
 /**
+ * The 2.x engine's stored messages, newest first: `GET /api/session/:id/message`
+ * pages of at most 200 (`order=desc`, then `cursor`), every message as the
+ * engine stores it (compacted ones too, unlike /context, which starts at the
+ * last compaction). The CLI reads them the same way (collector-observer.ts).
+ */
+async function* engineMessagesV2(fetchEngine: EngineFetch, path: string): AsyncGenerator<EngineMessage> {
+  let cursor: string | null = null;
+  while (true) {
+    const response = await fetchEngine(path, cursor ? { cursor, limit: "200" } : { order: "desc", limit: "200" });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new EngineReadError(response.status);
+    }
+    const payload = await readObservedResponse(response, MAX_ENGINE_READ_BYTES);
+    const list = isRecord(payload) && Array.isArray(payload.data) ? payload.data : null;
+    if (!list) throw new Error("the engine messages could not be read");
+    for (const message of list) yield { message: slimEngineMessage(rewritten(path, message), null), whole: true };
+    const next = isRecord(payload) && isRecord(payload.cursor) && typeof payload.cursor.next === "string" ? payload.cursor.next : null;
+    if (!next || next === cursor || list.length === 0) return;
+    cursor = next;
+  }
+}
+
+/** A session's stored messages: v1 `/session/:id/message`, v2 `/api/session/:id/message`. */
+function messagesPathOf(sessionId: string, v2: boolean): string {
+  return `${v2 ? "/api/session" : "/session"}/${encodeURIComponent(sessionId)}/message`;
+}
+
+/** A session's sub-agent sessions: v1 `/session/:id/children`, v2 `GET /api/session?parentID=` (its `data`). */
+async function engineChildren(fetchEngine: EngineFetch, parentSessionId: string, v2: boolean): Promise<unknown[] | null> {
+  const listed = await readEngineJson(fetchEngine, v2 ? `/api/session?parentID=${encodeURIComponent(parentSessionId)}&limit=200` : `/session/${encodeURIComponent(parentSessionId)}/children`, 1024 * 1024)
+    .catch(nullOnErrorStatus);
+  const children = v2 && isRecord(listed) ? listed.data : listed;
+  return Array.isArray(children) ? children : null;
+}
+
+/**
  * A session's messages, newest first. A v1 engine is read a page at a
  * time, each page parsed under the read cap: after a page over it, the
  * newest message is asked for alone and later pages are at most half that
  * size, and a message over the cap on its own is known by the info that
- * leads it. The v2 daemon has no pages; its list is read whole under the
- * cap. Throws when the engine cannot be read.
+ * leads it. A v2 engine is read in its cursor pages (engineMessagesV2);
+ * unpaged, a list is read whole under the cap. Throws when the engine
+ * cannot be read.
  */
-async function* engineMessages(fetchEngine: EngineFetch, path: string, paged: boolean): AsyncGenerator<EngineMessage> {
+async function* engineMessages(fetchEngine: EngineFetch, path: string, paged: boolean | "v2"): AsyncGenerator<EngineMessage> {
+  if (paged === "v2") {
+    yield* engineMessagesV2(fetchEngine, path);
+    return;
+  }
   if (!paged) {
     const payload = await readEngineJson(fetchEngine, path);
     const list = isRecord(payload) && "data" in payload ? payload.data : payload;
@@ -911,9 +955,9 @@ type MessagePart = { messages: unknown[]; bytes: number };
 export async function readSessionTranscript(target: EngineTarget, sessionId: string, signal: AbortSignal): Promise<unknown[][] | null> {
   const fetchEngine = engineFetch(() => target, () => AbortSignal.any([signal, AbortSignal.timeout(20_000)]));
   const v2 = target.engine === "v2";
-  const path = v2 ? `/api/session/${encodeURIComponent(sessionId)}/context` : `/session/${encodeURIComponent(sessionId)}/message`;
+  const path = messagesPathOf(sessionId, v2);
   try {
-    const history = await readEngineHistory(engineMessages(fetchEngine, path, !v2), undefined, MAX_BACKLOG_MESSAGE_BYTES);
+    const history = await readEngineHistory(engineMessages(fetchEngine, path, v2 ? "v2" : true), undefined, MAX_BACKLOG_MESSAGE_BYTES);
     // The session may be running: only the calls of answers that ended are closed.
     return messageParts(closeOpenToolParts(history.delta, { engineIdle: false }).messages, history.sizes).map((part) => part.messages);
   } catch {
@@ -988,7 +1032,7 @@ export function projectArchiveEngineReads(target: EngineTarget | (() => EngineTa
       return v2 && isRecord(payload) && "data" in payload ? payload.data : payload;
     },
     // The same messages the observer counts turns from at turn end, in outline.
-    messages: () => messageOutlines(engineMessages(fetchEngine, v2 ? `${session}/context` : `${session}/message`, !v2)),
+    messages: () => messageOutlines(engineMessages(fetchEngine, `${session}/message`, v2 ? "v2" : true)),
   };
 }
 
@@ -1065,8 +1109,8 @@ export function observeUploadedSession(input: {
   const target = () => session.target;
   const fetchStatus = engineFetch(target, () => AbortSignal.any([stopped, AbortSignal.timeout(timing.statusTimeoutMs)]));
   const fetchEngine = engineFetch(target, () => AbortSignal.any([stopped, AbortSignal.timeout(timing.readTimeoutMs)]));
-  const messagesPath = v2 ? `/api/session/${encodeURIComponent(sessionId)}/context` : `/session/${encodeURIComponent(sessionId)}/message`;
-  const messages = () => engineMessages(fetchEngine, messagesPath, !v2);
+  const messagesPath = messagesPathOf(sessionId, v2);
+  const messages = () => engineMessages(fetchEngine, messagesPath, v2 ? "v2" : true);
   const enginePayload = (payload: unknown) => (v2 && isRecord(payload) && "data" in payload ? payload.data : payload);
   const falseUnlessStopped = (error: unknown): false => {
     if (stopped.aborted) throw error;
@@ -1197,9 +1241,10 @@ export function observeUploadedSession(input: {
     } catch (error) {
       if (stopped.aborted) throw error;
     }
-    if (!v2) {
+    {
       try {
         await captureChildSessions({
+          v2,
           onChild: (_childId, _depth, sent) => {
             childMessages += sent.length;
           },
@@ -1298,10 +1343,10 @@ export function observeUploadedSession(input: {
     const children: WriterSessionMessages[] = [];
     // Quitting (the engine closes with the app) or recovered: the sub-agents' calls end with it.
     const childTools = { engineIdle: status === "quit" || recovered, closed: 0 };
-    // The v2 daemon has no subagent children route; only its root turn is captured.
-    if (!v2) {
+    {
       try {
         await captureChildSessions({
+          v2,
           onChild: (childId, depth, childMessages) => children.push({ sessionId: childId, role: "child", depth, messages: childMessages }),
           sessionUploader,
           rootSessionId: sessionId,
@@ -1453,11 +1498,10 @@ export function observeUploadedSession(input: {
             current.flushed(timing.now());
           }
         }
-        // The v2 daemon has no children route: nothing to list there.
-        if (!v2 && timing.now() - childIdsAt >= CHILD_IDS_INTERVAL_MS) {
+        if (timing.now() - childIdsAt >= CHILD_IDS_INTERVAL_MS) {
           childIdsAt = timing.now();
           try {
-            sessionUploader.noteChildSessionIds(sessionId, await childSessionIdsBelow(fetchEngine, sessionId));
+            sessionUploader.noteChildSessionIds(sessionId, await childSessionIdsBelow(fetchEngine, sessionId, v2));
           } catch (error) {
             if (stopped.aborted) throw error;
           }

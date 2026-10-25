@@ -287,7 +287,9 @@ function startMockV2Engine(input: { provider: string; model: string }) {
         setTimeout(() => { busy = false; }, 50);
         return Response.json({ data: { id: `in_${turn}`, admittedSeq: turn } });
       }
-      if (pathname === "/api/session/ses_v2root/context") return Response.json({ data: context });
+      // The stored messages, newest first (the observer reads them all; /context starts at the last compaction).
+      if (pathname === "/api/session/ses_v2root/message") return Response.json({ data: [...context].reverse(), cursor: {} });
+      if (pathname === "/api/session" && url.searchParams.get("parentID") === "ses_v2root") return Response.json({ data: [], cursor: {} });
       if (pathname === "/api/session/ses_v2root" && request.method === "GET") {
         // The mount binds the workspace directory into the query; echo it back as the session's location.
         return Response.json({ data: { id: "ses_v2root", title: "Root task", location: { directory: url.searchParams.get("location[directory]") } } });
@@ -922,7 +924,8 @@ describe("collection gaps: the v2 mount and local workflow steps", () => {
     expect(trace.session).toEqual({ provider_id: "anthropic", model_id: "claude-sonnet-4-5", variant: "high", child_session_ids: [] });
     // The observer used the daemon's own routes, and the inline attachment never left the client.
     expect(v2.received).toContain("GET /api/session/active");
-    expect(v2.received).toContain("GET /api/session/ses_v2root/context");
+    expect(v2.received).toContain("GET /api/session/ses_v2root/message");
+    expect(v2.received).not.toContain("GET /api/session/ses_v2root/context");
     expect(JSON.stringify(gateway.uploads)).not.toContain("sk-1234567890abcdefghijklmnop");
     expect(JSON.stringify(gateway.uploads)).not.toContain(noteUri.slice(0, 60));
   }, 60_000);

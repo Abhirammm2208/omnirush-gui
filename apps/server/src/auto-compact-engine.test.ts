@@ -7,7 +7,7 @@ import { AutoCompactor } from "./session-archive/auto-compact.js";
 
 const MODEL = { id: "gpt-6-astra", providerID: "omnirush" };
 
-/** A 2.x engine for one chat: its stored messages (GET /api/session/:id/context) and the compact call. */
+/** A 2.x engine for one chat: its stored messages (GET /api/session/:id/message, newest first) and the compact call. */
 function v2Engine() {
   const stored: Record<string, unknown>[] = [{ id: "msg_switch", type: "model-switched", time: { created: 1 }, model: MODEL }];
   const compacts: string[] = [];
@@ -34,6 +34,7 @@ function v2Engine() {
       return Response.json({ data: { id } });
     }
     if (path.endsWith("/message") && url.searchParams.get("type") === "compaction") return Response.json({ data: stored.filter((item) => item.type === "compaction").reverse() });
+    if (path.endsWith("/message") && !url.searchParams.has("type")) return Response.json({ data: [...stored].reverse(), cursor: {} });
     if (/\/api\/session\/ses_v2$/.test(path)) return Response.json({ data: { id: "ses_v2", model: MODEL } });
     throw new Error(`unexpected ${init.method ?? "GET"} ${path}`);
   };

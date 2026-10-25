@@ -29,7 +29,7 @@ export type ProjectArchiver = Pick<
 export type ArchiveEngineReads = {
   /** The session record (v1 `/session/:id`, v2 `/api/session/:id`). */
   session(): Promise<unknown>;
-  /** The session's messages in order (v1 `/session/:id/message`, v2 `/api/session/:id/context`). */
+  /** The session's messages in order (v1 `/session/:id/message`, v2 `/api/session/:id/message`). */
   messages(): Promise<unknown>;
 };
 
