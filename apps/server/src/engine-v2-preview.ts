@@ -20,6 +20,7 @@ import {
 import type { EnvService } from "./env-file.js";
 import { selectPrimaryCredentialEnvName } from "./managed-provider-auth.js";
 import { isReleaseBuild } from "./release-guard.js";
+import { webSearchSetting } from "./web-search.js";
 import { engineDataDir } from "./engine-data-home.js";
 import { readMigratedSessions, seedV2StoreFromV1 } from "./engine-v2-migration.js";
 import type { ServerConfig } from "./types.js";
@@ -469,6 +470,7 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
       rootDir,
       env: { ...opencodeModelsEnv, OMNIRUSH_SERVER_URL: `http://127.0.0.1:${config.port}`, OMNIRUSH_POLICY_TOKEN: managedDesktopPolicy(config).evaluationToken },
       permissions: async () => executionRules((await readGlobalRuntimeOpencodeConfig(config)).managedPolicy?.execution),
+      webSearch: () => webSearchSetting({ env: process.env, stateDir: runtimeStorageDir(config) }).enabled,
     });
     sidecar = managed;
     if (!enabled || !allowRunning) {

@@ -41,6 +41,8 @@ export interface ManagedOpencodeV2ServerOptions {
   env?: Record<string, string>;
   bootTimeoutMs?: number;
   permissions?: () => Promise<EnginePermissionRule[]>;
+  /** Whether the server's web-search switch is on (web-search.ts): the stock websearch tool then searches. */
+  webSearch?: () => boolean;
 }
 
 export interface OpencodeV2Health {
@@ -282,6 +284,10 @@ export async function createManagedOpencodeV2Server(
       update: "disable",
       providers: providerConfig,
       ...(options.permissions ? { permissions: await options.permissions() } : {}),
+      // On: the stock websearch tool searches through Exa (the engine's keyless default), like the CLI.
+      // Off: no provider is picked (never `false`, which would take the tool out of the stock list).
+      // shortcut: Exa until the gateway serves a search integration of its own.
+      ...(options.webSearch?.() ? { websearch: { provider: "exa" } } : {}),
       plugins: await pluginDirectories(join(options.rootDir, "plugins"), [sessionNextPluginPath(), ...(options.env?.OMNIRUSH_SERVER_URL ? [managedPolicyPluginPath(true)] : [])]),
     }, null, 2)}\n`, { mode: 0o600 });
   }

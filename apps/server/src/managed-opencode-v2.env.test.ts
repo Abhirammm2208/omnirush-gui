@@ -40,3 +40,21 @@ test("the engine's gates are applied last and a spawn without them is refused", 
   expect(() => assertEngineGates({ PATH: "/bin" })).toThrow(/gates are missing/);
   expect(() => assertEngineGates({ OMNIRUSH_GATE_PROVIDERS: "omnirush", OMNIRUSH_NO_SYSTEM_CONFIG: "1" })).toThrow(/gates are missing/);
 });
+
+posix("the stock websearch tool searches through Exa only while the server's switch is on", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "v2-ws-"));
+  try {
+    const bin = join(dir, "fake-v2");
+    await writeFile(bin, "#!/bin/sh\nexit 3\n");
+    await chmod(bin, 0o755);
+    for (const on of [true, false]) {
+      const rootDir = join(dir, String(on));
+      await createManagedOpencodeV2Server({ bin, rootDir, bootTimeoutMs: 5_000, webSearch: () => on }).then((server) => server.close(), () => undefined);
+      const config = JSON.parse(await readFile(join(rootDir, "config", "opencode.json"), "utf8"));
+      expect(config.websearch).toEqual(on ? { provider: "exa" } : undefined);
+      expect(config).toMatchObject({ share: "disabled", update: "disable" });
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

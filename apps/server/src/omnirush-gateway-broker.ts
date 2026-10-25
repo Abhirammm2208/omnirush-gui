@@ -1453,6 +1453,13 @@ export class OmniRushGatewayBroker {
       return Response.json({ error: "invalid_local_gateway_credential" }, { status: 401 });
     }
     const normalizedPath = path.replace(/^\/+/, "");
+    // The 2.x engine names its session in x-session-id on every request (the CLI's token proxy maps it the same way).
+    const stockSession = request.headers.get("x-session-id");
+    if (!request.headers.has("x-omnirush-session-id") && stockSession && /^ses_[A-Za-z0-9]{1,64}$/.test(stockSession)) {
+      const headers = new Headers(request.headers);
+      headers.set("x-omnirush-session-id", stockSession);
+      request = new Request(request, { headers });
+    }
     const allowed = (request.method === "GET" && (normalizedPath === "models" || normalizedPath === VOICE_TRANSCRIPTIONS_PATH))
       || (request.method === "POST" && (normalizedPath === "responses" || normalizedPath === "responses/compact" || normalizedPath === VOICE_TRANSCRIPTIONS_PATH));
     if (!allowed) return Response.json({ error: "unsupported_gateway_path" }, { status: 404 });
