@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ClaudeAccess, ClaudeAuthorization, ClaudeBudgetSnapshot, ClaudeGrant } from "./runtime.js";
-import { MODEL } from "./sandbox-assets.js";
+import { CLAUDE_MODEL_ID } from "./sandbox-assets.js";
 import { SDK_INSTALL_PIN } from "./sandbox-lock.js";
 
 export type ClaudeDeviceRequest = (route: string, init?: { method: "POST"; body: string }, owner?: string) => Promise<Response>;
@@ -8,6 +8,19 @@ const record = (value: unknown): value is Record<string, unknown> => Boolean(val
 const tokens = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 const limit = (value: unknown): value is number | null => value === null || tokens(value);
 const timestamp = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
+/** A picker entry of the server's `claude_code.catalog`. */
+export type ClaudeCatalogEntry = { id: string; name: string };
+/** The catalog's valid entries (catalog ids, visible names), first of each id kept. */
+export function claudeCatalog(value: unknown): ClaudeCatalogEntry[] {
+  if (!Array.isArray(value)) return [];
+  const entries: ClaudeCatalogEntry[] = [];
+  for (const item of value.slice(0, 16)) {
+    if (!record(item) || typeof item.id !== "string" || !CLAUDE_MODEL_ID.test(item.id) || entries.some(entry => entry.id === item.id)) continue;
+    const name = typeof item.display_name === "string" ? item.display_name.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim().slice(0, 64) : "";
+    entries.push({id: item.id, name: name || item.id});
+  }
+  return entries;
+}
 /** Neutral quota metadata is useful to the SDK; provider and credential headers stay private. */
 export function claudeResponseHeaders(headers: Headers): Record<string, string> {
   const result: Record<string, string> = {};
@@ -69,28 +82,34 @@ async function read(response: Response): Promise<unknown> {
 export class ClaudeDeviceAccess {
   private readonly grants = new Map<string, { grant: ClaudeGrant; refreshAt: number }>();
   private readonly pending = new Map<string, Promise<ClaudeGrant>>();
-  private capability?: {owner: string; expiresAt: number; enabled: boolean};
+  private capability?: {owner: string; expiresAt: number; models: string[]; catalog: ClaudeCatalogEntry[]; reason: string | null};
   constructor(private readonly request: ClaudeDeviceRequest, private readonly client: string) {}
 
   async access(): Promise<ClaudeAccess> {
     const account = await read(await this.request("device/me"));
     if (!record(account) || typeof account.id !== "string" || !account.id) throw new Error("Sign in to OmniRush to use Claude Code");
     if (!this.capability || this.capability.owner !== account.id || Date.now() >= this.capability.expiresAt) {
-      let enabled = false;
+      let models: string[] = [], catalog: ClaudeCatalogEntry[] = [], reason: string | null = "unavailable";
       try {
         const value = await read(await this.request("collect/capabilities"));
         const code = record(value) ? value.claude_code : null;
-        // The pilot supports this exact SDK/Code pair and one fixed model.
-        // An enabled relay with an empty catalog is not permission to run it.
-        enabled = record(code) && code.enabled === true && record(code.sdk)
-          && code.sdk.package === SDK_INSTALL_PIN.package && code.sdk.version === SDK_INSTALL_PIN.version
-          && code.sdk.integrity === SDK_INSTALL_PIN.integrity
-          && Array.isArray(code.models) && code.models.includes(MODEL)
-          && code.models.every(model => typeof model === "string" && model.length > 0);
+        if (record(code)) {
+          // The catalog is shown to every account; `models` (what may run) only to allowed ones.
+          catalog = claudeCatalog(code.catalog);
+          const access = record(code.access) ? code.access : {};
+          reason = typeof access.reason === "string" ? access.reason : code.enabled === true ? null : "not_allowed";
+          // The runtime supports this exact SDK/Code pair. An enabled relay
+          // with an empty model list is not permission to run it.
+          const pinned = record(code.sdk) && code.sdk.package === SDK_INSTALL_PIN.package && code.sdk.version === SDK_INSTALL_PIN.version
+            && code.sdk.integrity === SDK_INSTALL_PIN.integrity;
+          if (code.enabled === true && pinned && Array.isArray(code.models)) models = [...new Set(code.models.filter((model): model is string => typeof model === "string" && CLAUDE_MODEL_ID.test(model)))];
+          if (code.enabled === true && !models.length) reason = pinned ? "no_models" : "client_outdated";
+        }
       } catch { /* Failed eligibility checks deny new sessions, but never hide saved evidence. */ }
-      this.capability = {owner: account.id, expiresAt: Date.now() + 30_000, enabled};
+      this.capability = {owner: account.id, expiresAt: Date.now() + 30_000, models, catalog, reason: models.length ? null : reason};
     }
-    return { owner: account.id, capabilities: this.capability.enabled ? ["claude-code"] : [] };
+    const {models, catalog, reason} = this.capability;
+    return { owner: account.id, capabilities: models.length ? ["claude-code"] : [], models, catalog, reason };
   }
 
   async authorize(context: ClaudeAuthorization): Promise<ClaudeGrant> {

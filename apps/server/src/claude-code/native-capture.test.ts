@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { NativeCapture } from "./native-capture.js";
 import { ClaudeAccessError, ClaudeDeviceAccess } from "./access.js";
-import { CLAUDE_VERSION, MODEL } from "./sandbox-assets.js";
+import { CLAUDE_VERSION, MANAGED_SETTINGS, MODEL, managedSettings } from "./sandbox-assets.js";
 import { SDK_INSTALL_PIN } from "./sandbox-lock.js";
 import { ClaudeRuntime } from "./runtime.js";
 import { ApiError } from "../errors.js";
@@ -16,10 +16,10 @@ test("managed Claude availability requires an enabled compatible catalog, never 
   const valid = {enabled: true, version: CLAUDE_VERSION, sdk: SDK_INSTALL_PIN, models: [MODEL]};
   for (const [code, allowed] of [
     [valid, true], [{...valid, enabled: false}, false], [{...valid, models: []}, false],
-    [{...valid, models: ["claude-haiku-4-5-20251001"]}, false], [{...valid, sdk: {...SDK_INSTALL_PIN, version: "0.0.0"}}, false],
+    [{...valid, models: ["claude-haiku-4-5-20251001"]}, true], [{...valid, models: ["gpt-6-astra"]}, false], [{...valid, sdk: {...SDK_INSTALL_PIN, version: "0.0.0"}}, false],
     [{...valid, sdk: null}, false], [{...valid, sdk: {...SDK_INSTALL_PIN, integrity: "sha512-wrong"}}, false],
     [{...valid, sdk: {...SDK_INSTALL_PIN, package: "@anthropic-ai/claude-code"}}, false],
-    [{...valid, models: [MODEL, null]}, false], [{enabled: true}, false], [null, false],
+    [{...valid, models: [MODEL, null]}, true], [{enabled: true}, false], [null, false],
   ] as const) {
     const routes: string[] = [];
     const access = new ClaudeDeviceAccess(async route => {
@@ -29,6 +29,25 @@ test("managed Claude availability requires an enabled compatible catalog, never 
     expect((await access.access()).capabilities?.includes("claude-code")).toBe(allowed);
     expect(routes).toEqual(["device/me", "collect/capabilities"]);
   }
+});
+
+test("access lists every Claude model the server allows and the catalog for everyone", async () => {
+  const sonnet = "claude-sonnet-5-5";
+  const catalog = [{id: MODEL, display_name: "Claude Opus 5.5"}, {id: sonnet, display_name: "Claude Sonnet 5.5"}, {id: "gpt-6-astra", display_name: "x"}, {id: sonnet, display_name: "dup"}];
+  const read = async (code: unknown) => new ClaudeDeviceAccess(async route => Response.json(route === "device/me" ? {id: "owner"} : {claude_code: code}), "desktop/3.7.6").access();
+  const allowed = await read({enabled: true, sdk: SDK_INSTALL_PIN, models: [MODEL, sonnet, sonnet], catalog, access: {mode: "staff", allowed: true, reason: null}});
+  expect(allowed).toMatchObject({capabilities: ["claude-code"], models: [MODEL, sonnet], reason: null});
+  expect(allowed.catalog).toEqual([{id: MODEL, name: "Claude Opus 5.5"}, {id: sonnet, name: "Claude Sonnet 5.5"}]);
+  const denied = await read({enabled: false, sdk: SDK_INSTALL_PIN, models: [], catalog, access: {mode: "staff", allowed: false, reason: "not_allowed"}});
+  expect(denied).toMatchObject({capabilities: [], models: [], reason: "not_allowed"});
+  expect(denied.catalog?.map(entry => entry.id)).toEqual([MODEL, sonnet]);
+  expect((await read({enabled: true, sdk: null, models: [sonnet], catalog})).reason).toBe("client_outdated");
+});
+
+test("managed settings pin each session's own model; Opus keeps its original policy", () => {
+  expect(managedSettings(MODEL)).toBe(MANAGED_SETTINGS);
+  expect(JSON.parse(MANAGED_SETTINGS).deniedModels).toEqual(["sonnet", "haiku"]);
+  expect(JSON.parse(managedSettings("claude-sonnet-5-5"))).toMatchObject({availableModels: ["claude-sonnet-5-5"], deniedModels: ["opus", "haiku"]});
 });
 
 test("managed grants reject provider keys and zero refresh, refresh from request time, and revoke the root", async () => {
@@ -112,7 +131,7 @@ test("session broker re-mints once on rejected authentication and never replays 
     expect(init?.redirect).toBe("error");
     expect(init?.signal?.aborted).toBe(false);
     return globalThis.fetch(input, init);
-  }, directory: root, surface: "gui", access: async () => ({owner: "owner", capabilities: ["claude-code"]}),
+  }, directory: root, surface: "gui", access: async () => ({owner: "owner", capabilities: ["claude-code"], models: [MODEL]}),
     authorize: async context => {
       authorizations++; if (context.refresh) refreshes++;
       return {owner: "owner", sessionId: id, model: MODEL, upstreamModel: MODEL, client: "desktop/3.7.5",
@@ -733,13 +752,13 @@ function gate<T>() {
 
 test("shutdown fences startup blocked on access and never mints or starts Docker after access resolves", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-startup-")); roots.push(root);
-  const entered = gate<void>(), access = gate<{owner: string; capabilities: string[]}>(); let grants = 0, dockerCalls = 0;
+  const entered = gate<void>(), access = gate<{owner: string; capabilities: string[]; models: string[]}>(); let grants = 0, dockerCalls = 0;
   const runtime = new ClaudeRuntime({fetch: globalThis.fetch, directory: root, surface: "gui", access: () => { entered.resolve(); return access.promise; }, authorize: async () => { grants++; throw new Error("must not mint"); }});
   Reflect.set(runtime, "docker", async () => { dockerCalls++; throw new Error("must not start Docker"); });
   const creation = runtime.create(root, "workspace").then(() => "created", () => "cancelled");
   await entered.promise;
   const shutdown = runtime.shutdown();
-  access.resolve({owner: "local-owner", capabilities: ["claude-code"]});
+  access.resolve({owner: "local-owner", capabilities: ["claude-code"], models: [MODEL]});
   expect(await creation).toBe("cancelled"); await shutdown;
   expect({grants, dockerCalls}).toEqual({grants: 0, dockerCalls: 0});
   await expect(runtime.prepare()).rejects.toThrow();
@@ -785,12 +804,12 @@ async function cancellationResult(work: Promise<string>) {
   finally { clearTimeout(timer); }
 }
 
-function startupDockerFixture(stage: "build" | "create" | "cp" | "exec" | "restore") {
+function startupDockerFixture(stage: "build" | "create" | "cp" | "exec" | "restore", models: string[] = [MODEL]) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-docker-fixture-")); roots.push(root);
   const workspace = path.join(root, "workspace"); fs.mkdirSync(workspace);
   const docker = path.join(root, "docker-fixture.mjs"), ready = path.join(root, "ready"), release = path.join(root, "release"), log = path.join(root, "calls.jsonl");
   const runtime = new ClaudeRuntime({fetch: globalThis.fetch, directory: path.join(root, "state"), surface: "gui", docker,
-    access: async () => ({owner: "local-owner", capabilities: ["claude-code"]}),
+    access: async () => ({owner: "local-owner", capabilities: ["claude-code"], models}),
     authorize: async () => { grants++; throw new Error("must not authorize after cancellation"); }});
   let grants = 0;
   const fingerprint = createHash("sha256").update(JSON.stringify(Reflect.get(runtime, "harnessContract").call(runtime))).digest("hex");
@@ -820,6 +839,24 @@ else if(args[0]==='rm'||args[0]==='container'&&args[1]==='rm')fs.rmSync(state,{f
   return {root, workspace, runtime, ready, release, log, grants: () => grants,
     calls: (): string[][] => fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line)) : []};
 }
+
+test("a session pins the model it was created with and refuses one the server does not list", async () => {
+  const sonnet = "claude-sonnet-5-5";
+  const refused = startupDockerFixture("restore");
+  await expect(refused.runtime.create(refused.workspace, "workspace", undefined, sonnet)).rejects.toThrow("isn't available on your account yet");
+  expect(refused.calls()).toEqual([]);
+  const f = startupDockerFixture("restore", [MODEL, sonnet]);
+  const session = await f.runtime.create(f.workspace, "workspace", undefined, sonnet);
+  expect(session.model).toBe(sonnet);
+  expect(session.contract?.model).toBe(sonnet);
+  expect(session.modelIsolation?.expectedModel).toBe(sonnet);
+  expect(session.contract?.harness.managedSettingsSha256).toBe(createHash("sha256").update(managedSettings(sonnet)).digest("hex"));
+  expect(f.calls()).toContainEqual(["exec", "-i", "--user", "root", session.container, "sh", "-c", "cat > /etc/claude-code/managed-settings.json"]);
+  expect((await f.runtime.get(session.id)).compatibility).toBe("current");
+  const opus = startupDockerFixture("restore", [MODEL, sonnet]);
+  expect((await opus.runtime.create(opus.workspace, "workspace")).model).toBe(MODEL);
+  expect(opus.calls().some(call => call.includes("cat > /etc/claude-code/managed-settings.json"))).toBe(false);
+});
 
 for (const stage of ["build", "create", "cp", "exec"] as const) test(`startup request abort kills Docker ${stage}, waits for owned cleanup and never authorizes`, async () => {
   const f = startupDockerFixture(stage), controller = new AbortController();
