@@ -6,7 +6,7 @@
       "version": "2.7.1",
       "date": "2026-10-25",
       "new": [
-        "Claude Opus 5.5 and Claude Sonnet 5.5 are in the model picker in every project when your account has them. Picking one starts a Claude chat in this folder and turns the sandbox on for it. Claude needs Docker or Podman on this computer for now."
+        "Claude Opus 5.5 is in the model picker in every project when your account has it. Picking it starts a Claude chat in this folder and turns the sandbox on for it. Claude needs Docker or Podman on this computer for now."
       ],
       "improved": [
         "In a chat you can now switch to another model from the same provider. Picking a model from another provider offers to start a new chat with it, since a chat keeps one provider."
@@ -293,7 +293,7 @@
       "version": "3.7.6",
       "date": "2026-10-25",
       "new": [
-        "Claude Opus 5.5 and Claude Sonnet 5.5 are in the model picker in every project. Picking one sets up the project's sandbox and opens a Claude chat on that model (for now Claude also needs Docker or Podman on this computer). If your account doesn't have Claude yet, the app says so."
+        "Claude Opus 5.5 is in the model picker in every project. Picking it sets up the project's sandbox and opens a Claude chat on that model (for now Claude also needs Docker or Podman on this computer). If your account doesn't have Claude yet, the app says so."
       ],
       "improved": [
         "In a chat you can now switch to another model from the same provider. Picking a model from another provider offers to start a new chat with it, since a chat keeps one provider."
