@@ -233,6 +233,7 @@ import { startThreadApprovalReplayer, type ThreadApprovalReplayer } from "./thre
 import { CloudProviderSync, parseCloudProviderDenSession } from "./cloud-provider-sync.js";
 import { createEngineV2Preview, resolveInitialEngineV2PreviewState, type EngineV2Preview } from "./engine-v2-preview.js";
 import { MIGRATED_FROM } from "./engine-v2-migration.js";
+import { createV2BudgetWrap } from "./engine-v2-budget-wrap.js";
 import { APP_SECRET_HEADER, appRequestRefusal } from "./app-request-gate.js";
 import { isUploadFileDenied, sessionUploaderEnabled } from "./session-uploader.js";
 import { editorUserEditEvent, editorUserReviewEvent } from "./editor-events.js";
@@ -1275,7 +1276,11 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
         }
       : undefined
   );
+  // The quota wrap on the 2.x engine (engine-v2-budget-wrap.ts): set once the engine below exists.
+  let budgetWrap: ReturnType<typeof createV2BudgetWrap> | undefined;
   const gatewayBroker = new OmniRushGatewayBroker({
+    onModelResponse: (sessionId, headers) => budgetWrap?.noteResponse(sessionId, headers),
+    contextWrap: (sessionId) => budgetWrap?.contextWrap(sessionId) ?? false,
     sessionModelsFile: join(runtimeStorageDir(config), "chat-models.json"),
     log: (level, message, attributes) => logger.log(level, message, attributes),
     credentials: gatewayCredentials
@@ -1540,6 +1545,33 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
   };
   const engineV2Preview = createEngineV2Preview({ config, env, deferStart: true });
   engineV2ByServer.set(config, engineV2Preview);
+  /** A chat on the 2.x engine, read where it lives (its folder), or null. */
+  const v2ChatTarget = async (sessionId: string): Promise<EngineTarget | null> => {
+    const v2 = engineV2Preview.connection();
+    if (!v2) return null;
+    const headers = new Headers({ authorization: `Basic ${Buffer.from(`opencode:${v2.password}`).toString("base64")}` });
+    const found: unknown = await loopbackFetch(buildOpencodeProxyUrl(v2.url, `/api/session/${encodeURIComponent(sessionId)}`, ""), { headers, signal: AbortSignal.timeout(5_000) })
+      .then(async (response) => (response.ok ? response.json() : null)).catch(() => null);
+    const info = isRecord(found) && isRecord(found.data) ? found.data : null;
+    const directory = info && isRecord(info.location) && typeof info.location.directory === "string" ? info.location.directory : null;
+    return directory ? engineTarget(v2.url, headers, `?${new URLSearchParams({ "location[directory]": directory })}`, "v2") : null;
+  };
+  budgetWrap = createV2BudgetWrap({
+    control: async (id, args) => {
+      const result: unknown = await uiControl.request("query", { id, args });
+      if (!isRecord(result) || result.ok !== true || !isRecord(result.result)) return "unavailable";
+      return typeof result.result.choice === "string" ? result.result.choice : "ok";
+    },
+    busy: async (sessionId) => {
+      const target = await v2ChatTarget(sessionId);
+      return target ? desktopAutoCompactEngine(target, sessionId).busy() : null;
+    },
+    compact: async (sessionId) => {
+      const target = await v2ChatTarget(sessionId);
+      if (!target) throw new Error("the chat is not on the engine");
+      await desktopAutoCompactEngine(target, sessionId).summarize({ providerID: "omnirush", modelID: "" }, AbortSignal.timeout(5 * 60_000));
+    },
+  });
   const bestPracticesReloads = new BestPracticesEngineReloads({
     isBusy: (workspace) => engineHasActiveSessions(config, workspace, true),
     reload: (workspace) => reloadOpencodeEngine(config, workspace, engineMcpServerState, { reason: "engine_reload" }),

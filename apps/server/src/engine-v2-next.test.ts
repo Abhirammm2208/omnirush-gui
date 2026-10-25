@@ -144,3 +144,33 @@ test("steering and automatic compaction use the 2.x engine's routes", async () =
   expect(calls).toContain("DELETE /api/session/ses_busy/inbox/cmp_1");
   expect(calls).toContain("POST /api/session/ses_busy/interrupt");
 });
+
+test("the quota wrap on the 2.x engine: asked only while idle, an accepted offer compacts, a declined one is gone", async () => {
+  const { createV2BudgetWrap } = await import("./engine-v2-budget-wrap.js");
+  const asked: string[] = [];
+  const compacted: string[] = [];
+  let busy = true;
+  let answer = "accept";
+  const wrap = createV2BudgetWrap({
+    control: async (_id, args) => { asked.push(`${args.sessionID}:${args.operation}`); return args.operation === "offer" ? answer : "ok"; },
+    busy: async () => busy,
+    compact: async (sessionId) => { compacted.push(sessionId); },
+    sleep: async () => { busy = false; },
+    idleSettleMs: 0,
+  });
+  const offer = new Headers({ "x-omnirush-wrap-required": "1", "x-omnirush-wrap-offer-id": "off_1" });
+  wrap.noteResponse("ses_a", offer);
+  for (let i = 0; i < 50 && compacted.length === 0; i += 1) await Bun.sleep(1);
+  expect(compacted).toEqual(["ses_a"]);
+  expect(asked).toEqual(["ses_a:offer", "ses_a:finish"]);
+  expect(wrap.contextWrap("ses_a")).toBe(false);
+
+  answer = "decline";
+  asked.length = 0;
+  busy = false;
+  wrap.noteResponse("ses_b", new Headers({ "x-omnirush-wrap-required": "1", "x-omnirush-wrap-offer-id": "off_2" }));
+  for (let i = 0; i < 50 && asked.length === 0; i += 1) await Bun.sleep(1);
+  await Bun.sleep(5);
+  expect(asked).toEqual(["ses_b:offer"]);
+  expect(compacted).toEqual(["ses_a"]);
+});

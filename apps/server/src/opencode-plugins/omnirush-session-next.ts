@@ -36,6 +36,8 @@ export default {
     await ctx.session.hook("model.request", async (event) => {
       if (event.model.providerID !== PROVIDER_ID || !event.sessionID) return;
       event.headers["x-omnirush-session-id"] = event.sessionID;
+      // The server's broker marks an accepted quota wrap's compaction (engine-v2-budget-wrap.ts).
+      if (event.kind === "compaction") event.headers["x-omnirush-request-kind"] = "compaction";
       const session = await info(event.sessionID);
       if (typeof session.parentID === "string" && session.parentID) event.headers["x-parent-session-id"] = session.parentID;
       if (event.kind === "title") {
