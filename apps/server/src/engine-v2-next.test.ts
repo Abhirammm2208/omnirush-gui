@@ -236,3 +236,20 @@ test("archived chats are the app's own flag, applied to session reads", () => wi
   setArchived(dir, "ses_a", null);
   expect(withArchived(dir, { id: "ses_a", time: { created: 1 } })).toEqual({ id: "ses_a", time: { created: 1 } });
 }));
+
+test("the 2.x engine's agent prompt: its own tool names, no todo list; nothing else changes", async () => {
+  const { OMNIRUSH_AGENT_PROMPT, V2_PROMPT_EDITS, v2AgentPrompt } = await import("./omnirush-agent-prompt.js");
+  const { buildOmniRushV2Instructions } = await import("./opencode-v2-instructions.js");
+  const v1 = OMNIRUSH_AGENT_PROMPT;
+  const v2 = v2AgentPrompt(v1);
+  // Every 1.x sentence it adapts is in the 1.x text (the desktop's prompt has no web-off note).
+  for (const [from] of V2_PROMPT_EDITS) if (!from.startsWith("There is no web search")) expect(v1.includes(from)).toBe(true);
+  for (const word of ["apply_patch", "bash tool", "task tool", "task-tool", "todo list", "web_search"]) expect(v2.includes(word)).toBe(false);
+  // The same text otherwise: only the pinned edits differ.
+  let back = v2;
+  for (const [from, to] of V2_PROMPT_EDITS) if (to) back = back.split(to).join(from);
+  expect(back.replace(V2_PROMPT_EDITS[1][0], "")).toBe(v1.replace(V2_PROMPT_EDITS[1][0], ""));
+  const instructions = JSON.stringify(buildOmniRushV2Instructions(false));
+  expect(instructions).toContain("smaller patch (or edit) calls");
+  for (const word of ["apply_patch", "bash tool", "task tool", "todo list"]) expect(instructions.includes(word)).toBe(false);
+});
