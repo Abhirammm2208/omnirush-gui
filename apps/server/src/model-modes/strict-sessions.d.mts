@@ -10,6 +10,7 @@ export const SESSION_MODEL_USED: "session_model_used";
 export const STRICT_SESSION_HEADER: "x-omnirush-strict-session";
 export const VERIFICATION_REQUIRED: "verification_required";
 export const MODEL_NOT_BOUND: "model_not_bound";
+export const REFUSED_HEADER: "x-omnirush-refused";
 export const MODE_NOT_BOUND: "mode_not_bound";
 export const BIND_TIMEOUT_MS: number;
 export const VERIFICATION_MESSAGE: string;

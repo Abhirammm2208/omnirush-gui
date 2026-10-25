@@ -16,6 +16,7 @@ import type { ModelRef } from "@/app/types";
 import type { OmniRushSubagentModelState } from "@/app/lib/omnirush-server";
 import { useLinuxSandbox, type LinuxSandboxClient } from "@/react-app/domains/settings/linux-sandbox";
 import { useSubagentModel, type SubagentModelClient } from "@/react-app/domains/settings/subagent-model";
+import { getReactQueryClient } from "@/react-app/infra/query-client";
 
 type CatalogModels = OmniRushSubagentModelState["models"];
 type Mode = "native" | "box";
@@ -68,7 +69,28 @@ const STARTED_KEY = "omnirush.sessionModelFixed";
 /** Chats that sent a prompt: their model is fixed (one model per chat). */
 export function chatStarted(sessionId: string | null | undefined): boolean {
   if (!sessionId || typeof window === "undefined") return false;
-  try { return (JSON.parse(window.localStorage.getItem(STARTED_KEY) ?? "[]") as unknown[]).includes(sessionId); } catch { return false; }
+  try {
+    if ((JSON.parse(window.localStorage.getItem(STARTED_KEY) ?? "[]") as unknown[]).includes(sessionId)) return true;
+  } catch { /* the engine's messages still say */ }
+  return engineHasPrompt(sessionId);
+}
+
+/**
+ * Whether the engine's messages this app holds for a chat (its transcript or
+ * snapshot, session-sync.ts) hold a prompt: a chat started before chats were
+ * marked here, or on another install, is started too.
+ */
+function engineHasPrompt(sessionId: string): boolean {
+  const cache = getReactQueryClient();
+  for (const root of ["react-session-transcript", "react-session-snapshot"]) {
+    for (const [key, data] of cache.getQueriesData<unknown>({ queryKey: [root] })) {
+      if (key[2] !== sessionId) continue;
+      const messages = Array.isArray(data) ? data : (data as { messages?: unknown } | undefined)?.messages;
+      if (!Array.isArray(messages)) continue;
+      if (messages.some((message: { role?: unknown; info?: { role?: unknown } } | null) => (message?.role ?? message?.info?.role) === "user")) return true;
+    }
+  }
+  return false;
 }
 
 export function markChatStarted(sessionId: string): void {
