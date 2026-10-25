@@ -1,0 +1,78 @@
+/**
+ * MCP on the 2.x engine. Its plugins have no config hook, so the server applies the allowlist itself:
+ * - the engine's gate (engine-gates.mjs) names the servers it may start at all: the server list's ids,
+ *   plus the built-in computer use server while it is on;
+ * - each project's servers (the ones added in the app) go through the same filter as on the 1.x engine
+ *   (mcp-allow.mjs, which also writes the report Settings > MCP shows) and reach the engine through its
+ *   runtime MCP API, as direct tools (`codemode: false`: calls stay `<server>_<tool>`, never Code Mode).
+ * The engine starts a local server with its own environment under the entry's: the app's secrets are set
+ * empty there, and the server's own values come from the person's environment (env-only filtering).
+ */
+import { computerUseBuiltins, computerUseDir } from "./computer-use/desktop.js";
+import { SERVER_ID } from "./computer-use/shared/contract.mjs";
+import { createMcpPolicyHooks, mcpServerEnvironment } from "./mcp-allow/mcp-allow.mjs";
+import { currentMcpPolicy, mcpPolicyFile, mcpReportDir, mcpWorkspaceDir, readWorkspaceMcp } from "./mcp-allow/state.js";
+
+const GATE_NAME = /^[A-Za-z0-9_.-]+$/;
+const APP_SECRET_NAME = /^(?:OMNIRUSH_|OPENCODE_)/i;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The names the engine's gate allows (fixed for the engine's lifetime). */
+export function v2McpGate(stateDir: string, env: Record<string, string | undefined> = process.env): string[] {
+  const policy = currentMcpPolicy(stateDir);
+  const ids = policy?.enabled ? policy.allow.map((entry) => entry.id) : [];
+  const computerUse = computerUseBuiltins(computerUseDir(stateDir), env)[SERVER_ID] ? [SERVER_ID] : [];
+  return [...new Set([...ids, ...computerUse])].filter((name) => GATE_NAME.test(name)).sort();
+}
+
+/** One server's 2.x runtime config (the same fields the 1.x engine had), always a direct-tool server. */
+export function v2McpConfig(value: Record<string, unknown>, engineEnv: Record<string, string>): Record<string, unknown> | null {
+  const timeout = typeof value.timeout === "number" && value.timeout > 0 ? { timeout: { startup: value.timeout, catalog: value.timeout, execution: value.timeout } } : {};
+  if (value.type === "remote" && typeof value.url === "string") {
+    return { type: "remote", url: value.url, ...(value.oauth === false ? { oauth: false } : {}), ...(value.enabled === false ? { disabled: true } : {}), codemode: false, ...timeout };
+  }
+  if (!Array.isArray(value.command) || value.command.length === 0 || !value.command.every((part) => typeof part === "string" && part)) return null;
+  const own = isRecord(value.environment)
+    ? Object.fromEntries(Object.entries(value.environment).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+    : {};
+  // The engine's own secrets (its password, the app's tokens) are empty for the server.
+  for (const key of Object.keys(engineEnv)) if (APP_SECRET_NAME.test(key) && !(key in own)) own[key] = "";
+  return {
+    type: "local", command: value.command, environment: own,
+    ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}),
+    ...(value.enabled === false ? { disabled: true } : {}),
+    codemode: false, ...timeout,
+  };
+}
+
+/** The servers a project gets on the 2.x engine, by name; fails closed (no servers) on any error. */
+export async function desiredV2Mcp(stateDir: string, root: string, engineEnv: Record<string, string>, gate: readonly string[]): Promise<Record<string, Record<string, unknown>>> {
+  try {
+    const target: Record<string, unknown> = { mcp: readWorkspaceMcp(mcpWorkspaceDir(stateDir), root) };
+    // The built-in's name belongs to the app.
+    target.mcp = Object.fromEntries(Object.entries(target.mcp as Record<string, unknown>).filter(([name]) => !name.toLowerCase().startsWith(SERVER_ID)));
+    const hooks = createMcpPolicyHooks({
+      directory: root, policyFile: mcpPolicyFile(stateDir), reportDir: mcpReportDir(stateDir),
+      // The engine adds its whole environment under the entry's: values the server needs come from the person's.
+      envOnly: true, filterRequired: false,
+    });
+    await hooks.config(target, undefined);
+    const allowed: Record<string, Record<string, unknown>> = isRecord(target.mcp) ? (target.mcp as Record<string, Record<string, unknown>>) : {};
+    const builtin = computerUseBuiltins(computerUseDir(stateDir))[SERVER_ID];
+    if (builtin) {
+      const own = isRecord(builtin.environment) ? Object.fromEntries(Object.entries(builtin.environment).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
+      allowed[SERVER_ID] = { ...builtin, environment: { ...mcpServerEnvironment(process.env, {}, [], process.platform, { envOnly: true }), ...own } };
+    }
+    const out: Record<string, Record<string, unknown>> = {};
+    for (const [name, value] of Object.entries(allowed)) {
+      const config = isRecord(value) && gate.includes(name) ? v2McpConfig(value, engineEnv) : null;
+      if (config) out[name] = config;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}

@@ -592,45 +592,6 @@ export async function listMcpFromRuntimeSnapshot(
 }
 
 /**
- * Read only MCP names from static project/global config and the supplied
- * runtime snapshot. The names are used at an engine boundary; configs and
- * credentials never leave the server.
- */
-export async function configuredMcpNames(
-  workspaceRoot: string,
-  runtimeConfig: RuntimeOpencodeConfig = {},
-): Promise<string[]> {
-  const [project, global] = await Promise.all([
-    readJsoncFile(opencodeConfigPath(workspaceRoot), {} as Record<string, unknown>, {
-      allowInvalid: true,
-      maxBytes: DIAGNOSTIC_STATIC_CONFIG_MAX_BYTES,
-    }),
-    readJsoncFile(resolveGlobalOpenCodeConfigPath(), {} as Record<string, unknown>, {
-      allowInvalid: true,
-      maxBytes: DIAGNOSTIC_STATIC_CONFIG_MAX_BYTES,
-    }),
-  ]);
-  return [...new Set([
-    ...Object.keys(getMcpConfig(project.data)),
-    ...Object.keys(getMcpConfig(global.data)),
-    ...Object.keys(runtimeMcpMap(runtimeConfig)),
-  ])].sort();
-}
-
-/** The preview engine (v2) cannot apply the server's MCP list: MCP stays off there. */
-export const MCP_ENGINE_V2_MESSAGE =
-  "MCP servers are off with the preview engine. Turn the preview engine off to use this project's MCP servers, or remove them.";
-
-export async function assertNoConfiguredMcp(
-  workspaceRoot: string,
-  runtimeConfig: RuntimeOpencodeConfig = {},
-): Promise<void> {
-  const names = await configuredMcpNames(workspaceRoot, runtimeConfig);
-  if (names.length === 0) return;
-  throw new ApiError(403, "mcp_disabled", MCP_ENGINE_V2_MESSAGE, { servers: names });
-}
-
-/**
  * Diagnostics-only passive inventory. It returns every configured layer and
  * collision metadata without claiming which entry is effective: OpenCode's
  * static config merge and OmniRush.ai's later dynamic MCP registration can make

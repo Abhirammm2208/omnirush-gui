@@ -5,7 +5,6 @@ import type { OmniRushMcpPolicyView, OmniRushMcpPreset } from "../src/app/lib/om
 import type { McpServerEntry } from "../src/app/types";
 import {
   MCP_BLOCKED_HINTS,
-  MCP_ENGINE_V2_NOTE,
   MCP_REMOTE_NOT_SUPPORTED,
   McpSupportedPanel,
   mcpServerState,
@@ -28,7 +27,7 @@ const filesystem: OmniRushMcpPreset = {
 const sqlite: OmniRushMcpPreset = { ...filesystem, id: "sqlite", title: "SQLite", why: null, package: "mcp-server-sqlite-npx", version: "0.8.0", command: ["npx", "-y", "mcp-server-sqlite-npx", "data.db"] };
 
 function policy(overrides: Partial<OmniRushMcpPolicyView> = {}): OmniRushMcpPolicyView {
-  return { mode: "allowlist", enabled: true, message: null, engineV2: false, supported: [filesystem, sqlite], decisions: [], reportAt: null, ...overrides };
+  return { mode: "allowlist", enabled: true, message: null, supported: [filesystem, sqlite], decisions: [], reportAt: null, ...overrides };
 }
 
 const render = (props: Partial<Parameters<typeof McpSupportedPanel>[0]> = {}) => renderToStaticMarkup(
@@ -83,12 +82,6 @@ describe("Settings > MCP: supported servers", () => {
     expect(html).not.toContain(MCP_BLOCKED_HINTS.remote);
     // The configured preset says Added instead of offering it again.
     expect(html).toMatch(/data-testid="mcp-preset-filesystem".*Added/s);
-  });
-
-  test("the preview engine: MCP stays off there, and nothing is offered", () => {
-    const html = render({ policy: policy({ engineV2: true }), canAdd: false });
-    expect(html).toContain(MCP_ENGINE_V2_NOTE);
-    expect(html).not.toContain(">Add<");
   });
 
   test("a blocked row says why and what to do", () => {

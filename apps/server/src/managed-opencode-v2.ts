@@ -43,6 +43,8 @@ export interface ManagedOpencodeV2ServerOptions {
   permissions?: () => Promise<EnginePermissionRule[]>;
   /** Whether the server's web-search switch is on (web-search.ts): the stock websearch tool then searches. */
   webSearch?: () => boolean;
+  /** The MCP servers the engine's gate allows (engine-v2-mcp.ts); none when absent. */
+  mcpGate?: string[];
 }
 
 export interface OpencodeV2Health {
@@ -56,6 +58,9 @@ export interface ManagedOpencodeV2Server {
   username: string;
   password: string;
   childPid: number | undefined;
+  /** The environment the engine runs with (MCP servers inherit it under their own). */
+  readonly env: Record<string, string>;
+  readonly mcpGate: string[];
   readonly exitCode: number | null;
   readonly stdout: string;
   readonly stderr: string;
@@ -95,12 +100,12 @@ export async function pluginDirectories(root: string, modules: string[]): Promis
 }
 
 /**
- * The engine's environment with its gates last (engine-gates.mjs): only the gateway provider and no MCP
- * server (MCP stays off on this engine until its allowlist is wired). The engine fails open without the
- * gate variables, so the spawn is refused when they are missing.
+ * The engine's environment with its gates last (engine-gates.mjs): only the gateway provider and the
+ * listed MCP servers. The engine fails open without the gate variables, so the spawn is refused when
+ * they are missing.
  */
-export function engineV2SpawnEnv(env: Record<string, string>): Record<string, string> {
-  return assertEngineGates({ ...env, ...gateEnv({ provider: "omnirush", mcp: [] }) });
+export function engineV2SpawnEnv(env: Record<string, string>, mcp: readonly string[] = []): Record<string, string> {
+  return assertEngineGates({ ...env, ...gateEnv({ provider: "omnirush", mcp }) });
 }
 
 export function assertEngineGates(env: Record<string, string | undefined>): Record<string, string> {
@@ -178,7 +183,7 @@ export async function createManagedOpencodeV2Server(
     ...(opencodeModelsUrl === undefined ? {} : { OPENCODE_MODELS_URL: opencodeModelsUrl }),
     ...(disableModelsFetch === undefined ? {} : { OPENCODE_DISABLE_MODELS_FETCH: disableModelsFetch }),
     ...providerLockEnv(providerLock).set,
-  });
+  }, options.mcpGate ?? []);
   const child = spawn(bin, ["serve", "--hostname", hostname, "--port", String(port)], {
     env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -314,6 +319,8 @@ export async function createManagedOpencodeV2Server(
     username,
     password,
     childPid: child.pid,
+    env,
+    mcpGate: [...(options.mcpGate ?? [])],
     get exitCode() {
       return child.exitCode;
     },

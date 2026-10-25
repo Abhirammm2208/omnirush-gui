@@ -49,7 +49,7 @@ import { LatestTrailingWorkQueue } from "./latest-trailing-work-queue.js";
 import { buildEngineAuthProbeHeader } from "./engine-registry.js";
 import { addPlugin, listPlugins, normalizePluginSpec, removePlugin } from "./plugins.js";
 import { sanitizePortableOpencodeConfig } from "./portable-opencode.js";
-import { addMcp, assertNoConfiguredMcp, listMcp, removeMcp, setMcpEnabled } from "./mcp.js";
+import { addMcp, listMcp, removeMcp, setMcpEnabled } from "./mcp.js";
 import { buildOmniRushV2Instructions, waitForOmniRushV2Skills, OMNIRUSH_V2_INSTRUCTION_KEY } from "./opencode-v2-instructions.js";
 import {
   callMcpAppTool,
@@ -1666,8 +1666,9 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
           proxyService = "opencode";
           proxyBaseUrl = connection.url;
           await engineV2Preview.ensureWorkspaceReady(workspace.path);
-          // Reconcile through v2's runtime MCP API before the next call. The
-          // ordinary connection routes remain authoritative; v1 is untouched.
+          // The project's allowed MCP servers reach the engine before the next call (engine-v2-mcp.ts);
+          // a write first refreshes the app-added entries the filter reads.
+          if (request.method !== "GET" && request.method !== "HEAD") await writeWorkspaceMcpFile(config, workspace);
           await engineV2Preview.syncWorkspaceMcp(workspace.id, workspace.path);
           const send = () => proxyOpencodeV2Request({
             config,
@@ -2043,8 +2044,7 @@ export async function proxyOpencodeV2Request(input: {
   if (/^\/api\/config(?:\/|$)/.test(decodedPath)) {
     throw new ApiError(403, "engine_config_private", "Engine configuration is private");
   }
-  // The preview engine cannot apply the server's MCP list: MCP stays off
-  // there (its servers are removed before each request; engine-v2-preview.ts).
+  // MCP servers follow the server's list (engine-v2-mcp.ts): the engine's own MCP routes stay closed.
   if (/^(?:\/api)?\/mcp(?:\/|$)/.test(decodedPath) && method !== "GET" && method !== "HEAD") {
     throw new ApiError(403, "engine_mcp_managed", "Manage connections through OmniRush.ai");
   }
@@ -2053,10 +2053,6 @@ export async function proxyOpencodeV2Request(input: {
   const promptDispatch = isUploadV2PromptDispatch(method, routePath);
   const collectible = input.workspace.workspaceType !== "remote";
   if (promptDispatch && collectible) {
-    await assertNoConfiguredMcp(
-      input.workspace.path,
-      await readRuntimeOpencodeConfig(input.config, input.workspace.id),
-    );
     if (uploadDispatchRefused(input.config, input.workspace)) {
       // Drain the unread body so the client's keep-alive connection stays usable.
       await input.request.arrayBuffer().catch(() => undefined);
@@ -5460,7 +5456,6 @@ function createRoutes(
         mode: mcpPolicyForConfig(config),
         enabled,
         message: enabled ? policy?.message ?? null : mcpDisabledMessage(config),
-        engineV2: engineV2Preview.status().chatRouting === true,
         supported: enabled && policy ? policy.allow.map(mcpPreset) : [],
         decisions,
         reportAt: report?.at ?? null,

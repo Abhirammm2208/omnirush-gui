@@ -21,7 +21,9 @@ import type { EnvService } from "./env-file.js";
 import { selectPrimaryCredentialEnvName } from "./managed-provider-auth.js";
 import { isReleaseBuild } from "./release-guard.js";
 import { webSearchSetting } from "./web-search.js";
+import { desiredV2Mcp, v2McpGate } from "./engine-v2-mcp.js";
 import { engineDataDir } from "./engine-data-home.js";
+import { computerUseEngineEnv } from "./computer-use/desktop.js";
 import { engineV2Root, readMigratedSessions, seedV2StoreFromV1 } from "./engine-v2-migration.js";
 import type { ServerConfig } from "./types.js";
 
@@ -29,6 +31,8 @@ const PREVIEW_STATE_FILE = "engine-v2-preview.json";
 const UNSET_API_KEY = "omnirush-engine-v2-preview-unset";
 /** opencode-plugins/omnirush-session-next.ts's id (server modules never import plugin files). */
 export const OMNIRUSH_SESSION_PLUGIN_ID = "omnirush.session";
+/** How long a prompt waits for a project's MCP servers to connect. */
+const MCP_READY_TIMEOUT_MS = 15_000;
 // A cold sidecar can return HTTP 503 while its model catalog initializes for 17–20 seconds.
 const CATALOG_MIRROR_TIMEOUT_MS = 60_000;
 
@@ -253,32 +257,6 @@ function catalogModelIds(payload: unknown, mirroredProviderIds: string[]): strin
   return [...ids].sort((left, right) => left.localeCompare(right));
 }
 
-/** Translate only fields supported by the pinned v2 MCP API. */
-export function mapRuntimeMcpToV2(value: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(value)) return undefined;
-  if (value.enabled === false || value.disabled === true) return undefined;
-  const shared = {
-    ...(typeof value.codemode === "boolean" ? { codemode: value.codemode } : {}),
-    ...(typeof value.timeout === "number" && value.timeout > 0
-      ? { timeout: { startup: value.timeout, catalog: value.timeout, execution: value.timeout } } : {}),
-  };
-  const strings = (input: unknown) => isRecord(input)
-    ? Object.fromEntries(Object.entries(input).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
-  if (value.type === "local" && Array.isArray(value.command)
-    && value.command.length > 0 && value.command.every((part) => typeof part === "string" && part.trim())) {
-    return { type: "local", command: value.command, environment: strings(value.environment),
-      ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}), ...shared };
-  }
-  if (value.type !== "remote" || typeof value.url !== "string" || !/^https?:\/\//i.test(value.url)) return undefined;
-  const oauth = isRecord(value.oauth) ? {
-    ...(typeof value.oauth.clientId === "string" ? { client_id: value.oauth.clientId } : {}),
-    ...(typeof value.oauth.clientSecret === "string" ? { client_secret: value.oauth.clientSecret } : {}),
-    ...(typeof value.oauth.scope === "string" ? { scope: value.oauth.scope } : {}),
-  } : value.oauth === false ? false : undefined;
-  return { type: "remote", url: value.url, headers: strings(value.headers),
-    ...(oauth === undefined ? {} : { oauth }), ...shared };
-}
-
 /**
  * Chats bind to the gateway only through the session plugin's headers, and a 2.x plugin that
  * fails to load only warns: no chat starts in a location where it is not active.
@@ -335,26 +313,39 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
       const active = sidecar;
       if (!active) throw new Error("OmniRush v2 is not running");
       if (mcpCleaned.has(directory)) return;
-
-      // The v2 daemon can discover MCPs from project/global files without a
-      // runtime-DB write. Enumerate the live location and remove every entry;
-      // this is intentionally removal-only because MCP is globally disabled.
+      // The allowed servers (engine-v2-mcp.ts) through the engine's runtime MCP API; every other one goes.
+      const desired = await desiredV2Mcp(runtimeStorageDir(config), directory, active.env, active.mcpGate);
       const current = await active.fetchJson("/api/mcp", { directory, timeoutMs: 10_000 });
       if (current.status !== 200 || !isRecord(current.json) || !Array.isArray(current.json.data)) {
         throw new Error("OmniRush v2 MCP status is unavailable");
       }
-      const entries = current.json.data;
-      const names = entries.flatMap((entry) => (
-        isRecord(entry) && typeof entry.name === "string" && entry.name.trim()
-          ? [entry.name]
-          : []
+      const names = current.json.data.flatMap((entry) => (
+        isRecord(entry) && typeof entry.name === "string" && entry.name.trim() ? [entry.name] : []
       ));
-      await Promise.all(names.map(async (name) => {
+      await Promise.all(names.filter((name) => !Object.hasOwn(desired, name)).map(async (name) => {
         const result = await active.fetchJson(`/api/experimental/mcp/${encodeURIComponent(name)}`, {
           method: "DELETE", directory, timeoutMs: 15_000,
         });
         if (result.status !== 204 && result.status !== 404) throw new Error(`OmniRush v2 MCP removal failed (${result.status})`);
       }));
+      await Promise.all(Object.entries(desired).map(async ([name, serverConfig]) => {
+        const result = await active.fetchJson(`/api/experimental/mcp/${encodeURIComponent(name)}`, {
+          method: "PUT", directory, body: { config: serverConfig }, timeoutMs: 15_000,
+        });
+        if (result.status < 200 || result.status >= 300) throw new Error(`OmniRush v2 MCP setup failed (${result.status})`);
+      }));
+      // The first prompt waits (bounded) for the servers to connect, or its turn would have no MCP tools.
+      const deadline = Date.now() + MCP_READY_TIMEOUT_MS;
+      while (Object.keys(desired).length > 0 && Date.now() < deadline) {
+        const status = await active.fetchJson("/api/mcp", { directory, timeoutMs: 5_000 });
+        const servers = isRecord(status.json) && Array.isArray(status.json.data) ? status.json.data : [];
+        const waiting = Object.keys(desired).some((name) => {
+          const server = servers.find((entry) => isRecord(entry) && entry.name === name);
+          return !isRecord(server) || (isRecord(server.status) && server.status.status === "pending");
+        });
+        if (!waiting) break;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
       mcpCleaned.add(directory);
     })();
     mcpInFlight.set(directory, pending);
@@ -471,6 +462,7 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
       env: { ...opencodeModelsEnv, OMNIRUSH_SERVER_URL: `http://127.0.0.1:${config.port}`, OMNIRUSH_POLICY_TOKEN: managedDesktopPolicy(config).evaluationToken },
       permissions: async () => executionRules((await readGlobalRuntimeOpencodeConfig(config)).managedPolicy?.execution),
       webSearch: () => webSearchSetting({ env: process.env, stateDir: runtimeStorageDir(config) }).enabled,
+      mcpGate: v2McpGate(runtimeStorageDir(config), { ...process.env, ...computerUseEngineEnv(runtimeStorageDir(config)) }),
     });
     sidecar = managed;
     if (!enabled || !allowRunning) {

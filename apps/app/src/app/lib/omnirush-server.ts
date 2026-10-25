@@ -736,8 +736,6 @@ export type OmniRushMcpPolicyView = {
   mode: "allowlist" | "disabled";
   enabled: boolean;
   message: string | null;
-  /** The preview engine routes chats: MCP stays off there. */
-  engineV2?: boolean;
   supported: OmniRushMcpPreset[];
   decisions: OmniRushMcpDecision[];
   reportAt: number | null;
