@@ -2174,17 +2174,29 @@ export async function proxyOpencodeV2Request(input: {
     ? sessionId
     : null;
   const engine = capture && uploadedSessionId ? engineTarget(input.connection.url, headers, target.search, "v2") : null;
+  // Automatic compaction (session-archive/auto-compact.ts), as on the 1.x engine (auto-compact-engine.ts: the 2.x calls).
+  const autoCompactor = engine && uploadedSessionId ? autoCompactorsByServer.get(input.config) : undefined;
+  if (autoCompactor && engine && uploadedSessionId) {
+    const outcome = await autoCompactor.beforePrompt(uploadedSessionId, desktopAutoCompactEngine(engine, uploadedSessionId), body)
+      .catch((error: unknown): AutoCompactOutcome => ({ action: "failed", reason: error instanceof Error ? error.message : String(error) }));
+    if (outcome.action !== "none") createServerLogger(input.config).log("info", "Automatic compaction.", { "auto_compact.action": outcome.action, "auto_compact.reason": outcome.reason ?? "", "auto_compact.turns": outcome.turns ?? -1 });
+  }
+  // Steering (turn-steer.ts): the 2.x engine delivers a prompt to a running chat into its turn; such a
+  // prompt opens no turn of its own (no start snapshot, no archive start) and is recorded as "turn.steer".
+  const steerSentAt = Date.now();
+  const turnKind = capture && uploadedSessionId && engine ? await createSteerTracker(engine).classify(uploadedSessionId) : null;
+  const steer = Boolean(turnKind?.steer && uploadedSessionId && capture?.hasSession(uploadedSessionId));
   // A reopened chat's turns before this prompt: its turn numbers (uploads and box checkpoints) carry on from them.
-  const turnsBefore = capture && uploadedSessionId && engine ? await turnsBeforeCapture(capture, uploadedSessionId, engine) : 0;
+  const turnsBefore = capture && uploadedSessionId && engine && !steer ? await turnsBeforeCapture(capture, uploadedSessionId, engine) : 0;
   // The Linux sandbox (box/): a prompt of a workspace whose box is on starts the box, and takes the turn's checkpoint when it is captured.
   // One pin per chat: a chat that runs in the box is not moved to this computer when its project's box is off.
   const pinnedBoxWhy = promptDispatch && sessionId ? await boxServiceFor(input.config).pinnedBoxUnavailable(sessionId, input.workspace) : null;
   if (pinnedBoxWhy) throw new ApiError(409, "chat_pinned_box", pinnedBoxMessage(pinnedBoxWhy));
   const boxInfo = promptDispatch && sessionId
-    ? await boxServiceFor(input.config).beforePrompt(sessionId, input.workspace, { capture: Boolean(uploadedSessionId && engine), turnsBefore, nativeModel: await promptsNativeOnlyModel(input.config, body), signal: input.request.signal })
+    ? await boxServiceFor(input.config).beforePrompt(sessionId, input.workspace, { capture: Boolean(uploadedSessionId && engine) && !steer, turnsBefore, nativeModel: await promptsNativeOnlyModel(input.config, body), signal: input.request.signal })
     : null;
   if (promptDispatch && input.request.signal.aborted) return stoppedSendResponse(input.config, sessionId);
-  if (capture && uploadedSessionId && engine) {
+  if (capture && uploadedSessionId && engine && !steer) {
     // The turn before's background processes finish writing (at most 10 s after it ended), its project
     // delta is taken (at most 5 s more, only when it ended a moment ago), then capture v2's session-start
     // manifest is taken before the prompt reaches the engine (at most about 3 s).
@@ -2199,16 +2211,27 @@ export async function proxyOpencodeV2Request(input: {
     capture.captureSnapshot(uploadedSessionId, "prompt");
     capture.archiveSessionStarted(uploadedSessionId, input.workspace.path, engine);
   }
-  if (promptDispatch && sessionId) void pinChatCapturePolicy(input.config, capture, sessionId);
+  if (promptDispatch && sessionId && !steer) void pinChatCapturePolicy(input.config, capture, sessionId);
   // A parallel task's first prompt (routes/workspace-tasks.ts): only task workspaces.
-  if (input.workspace.task && promptDispatch && sessionId) {
+  if (input.workspace.task && promptDispatch && sessionId && !steer) {
     await noteTaskPrompt(input.workspace, sessionId, (id, type, data) => recordOpenSessionTrace(input.config, id, type, data));
   }
   if (promptDispatch && input.request.signal.aborted) return stoppedSendResponse(input.config, sessionId);
   const response = await loopbackFetch(target.toString(), { method, headers, body, signal: input.recoverySignal });
   // The engine has the prompt: its session status says busy from now on.
   turnActivity?.promptDispatched();
-  if (capture && uploadedSessionId && engine) {
+  if (capture && uploadedSessionId && engine && steer) {
+    if (response.ok) {
+      // The turn goes on (followed as before); the steer's record is found in the background.
+      capture.followSteer(uploadedSessionId, engine);
+      const reason = turnKind?.reason ?? "working";
+      const known = claimedSteerIds(uploadedSessionId);
+      void createSteerTracker(engine).describe(uploadedSessionId, steerSentAt, { known }).then((found) => {
+        if (found) claimSteerId(known, found.message_id);
+        capture.steerTurn(uploadedSessionId, steerRecord(found, steerSentAt, reason));
+      }).catch(() => capture.steerTurn(uploadedSessionId, steerRecord(null, steerSentAt, reason)));
+    }
+  } else if (capture && uploadedSessionId && engine) {
     capture.recordTrace(uploadedSessionId, "engine.response", { method, path: routePath, status: response.status });
     if (response.ok) capture.observeSession(uploadedSessionId, engine);
   }

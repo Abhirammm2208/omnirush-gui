@@ -117,3 +117,30 @@ test("MCP on the 2.x engine: the gate lists the server list's ids, entries stay 
   // Not on the gate: left out.
   expect(await desiredV2Mcp(dir, root, engineEnv, [])).toEqual({});
 }));
+
+test("steering and automatic compaction use the 2.x engine's routes", async () => {
+  const { createSteerTracker } = await import("./turn-steer.js");
+  const { desktopAutoCompactEngine } = await import("./auto-compact-engine.js");
+  const calls: string[] = [];
+  let last: unknown = { type: "assistant", id: "msg_a" };
+  const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    calls.push(`${init?.method ?? "GET"} ${url.pathname}`);
+    if (url.pathname === "/api/session/active") return Response.json({ data: { ses_busy: {} } });
+    if (url.pathname.endsWith("/message")) return Response.json({ data: [last] });
+    if (url.pathname.endsWith("/compact")) return Response.json({ data: { id: "cmp_1" } });
+    return new Response(null, { status: 204 });
+  };
+  const target = { baseUrl: "http://127.0.0.1:1", headers: [], search: "", engine: "v2" as const };
+  const tracker = createSteerTracker(target, { fetchImpl: fetchImpl as typeof fetch });
+  expect(await tracker.classify("ses_idle")).toMatchObject({ steer: false, reason: "idle" });
+  expect(await tracker.classify("ses_busy")).toMatchObject({ steer: true, reason: "working" });
+  last = { type: "compaction" };
+  expect(await tracker.classify("ses_busy")).toMatchObject({ steer: false, reason: "compacting" });
+  const engine = desktopAutoCompactEngine(target, "ses_busy", fetchImpl as never);
+  expect(await engine.busy()).toBe(true);
+  await engine.removeMessage("cmp_1_summary");
+  await engine.abort();
+  expect(calls).toContain("DELETE /api/session/ses_busy/inbox/cmp_1");
+  expect(calls).toContain("POST /api/session/ses_busy/interrupt");
+});

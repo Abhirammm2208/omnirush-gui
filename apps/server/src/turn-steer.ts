@@ -122,6 +122,7 @@ export type SteerTrackerOptions = {
 
 /** The v1 engine `target` (its base URL, auth header and directory scope): which prompts steer, and the record of each steer. */
 export function createSteerTracker(target: EngineTarget, { timeoutMs = 1_500, fetchImpl = loopbackFetch, delays = [150, 400, 1_000, 2_500, 5_000] }: SteerTrackerOptions = {}) {
+  if (target.engine === "v2") return createSteerTrackerV2(target, { timeoutMs, fetchImpl, delays });
   const read = async (route: string, query: Record<string, string>, limit: number): Promise<unknown> => {
     const url = new URL(buildOpencodeProxyUrl(target.baseUrl, route, target.search));
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
@@ -192,6 +193,70 @@ export function createSteerTracker(target: EngineTarget, { timeoutMs = 1_500, fe
         });
         const { running, last } = toolsAround(before, created);
         return { message_id: info.id as string, created_at: new Date(created).toISOString(), running, after_call: last };
+      }
+      return null;
+    },
+  };
+}
+
+/**
+ * The same on the 2.x engine (the CLI's createSteerTrackerV2): it steers natively (a prompt to a
+ * running session is delivered into its turn), so a prompt to a session the engine lists as running
+ * steers once its turn answered anything. The record is the 2.x user message; tools are `content` items.
+ */
+function createSteerTrackerV2(target: EngineTarget, { timeoutMs, fetchImpl, delays }: Required<Pick<SteerTrackerOptions, "timeoutMs" | "fetchImpl" | "delays">>) {
+  const read = async (route: string, limit: number): Promise<unknown> => {
+    const response = await fetchImpl(buildOpencodeProxyUrl(target.baseUrl, route, target.search), { headers: new Headers(target.headers), signal: AbortSignal.timeout(timeoutMs) });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`engine answered ${response.status}`);
+    }
+    const body = await readBounded(response, limit);
+    return isRecord(body) ? body.data : null;
+  };
+  const newest = async (sessionId: string, count: number): Promise<Json[]> => {
+    const list = await read(`/api/session/${encodeURIComponent(sessionId)}/message?order=desc&limit=${count}`, MESSAGES_MAX_BYTES);
+    if (!Array.isArray(list)) throw new Error("unreadable message list");
+    return list.filter(isRecord).reverse();
+  };
+  const tools = (message: Json): Json[] => (Array.isArray(message.content) ? message.content.filter((item): item is Json => isRecord(item) && item.type === "tool") : []);
+  return {
+    async classify(sessionId: string): Promise<SteerVerdict> {
+      let active: unknown;
+      try { active = await read("/api/session/active", STATUS_MAX_BYTES); }
+      catch (error) { return { steer: false, busy: null, reason: "status_unreadable", error: errorText(error) }; }
+      if (!isRecord(active) || !(sessionId in active)) return { steer: false, busy: false, reason: "idle" };
+      try {
+        const [last] = (await newest(sessionId, 1)).slice(-1);
+        if (last?.type === "assistant") return { steer: true, busy: true, reason: "working" };
+        if (last?.type === "compaction") return { steer: false, busy: true, reason: "compacting" };
+        return { steer: false, busy: true, reason: last?.type === "user" ? "not_started" : "ending" };
+      } catch (error) {
+        return { steer: true, busy: true, reason: "busy_unread", error: errorText(error) };
+      }
+    },
+    async describe(sessionId: string, sentAt: number, { known = new Set<string>(), stopped = () => false }: { known?: ReadonlySet<string>; stopped?: () => boolean } = {}): Promise<SteerFound | null> {
+      for (const delay of delays) {
+        await new Promise<void>((resolve) => { const timer = setTimeout(resolve, delay); timer.unref?.(); });
+        if (stopped()) return null;
+        let list: Json[];
+        try { list = await newest(sessionId, 6); } catch { continue; }
+        const createdOf = (message: Json) => toMs(isRecord(message.time) ? message.time.created : undefined);
+        const steer = list.find((message) => message.type === "user" && typeof message.id === "string" && !known.has(message.id) && (createdOf(message) ?? -Infinity) >= sentAt - 50);
+        if (!steer) continue;
+        const created = createdOf(steer) as number;
+        const running: SteerFound["running"] = [];
+        let last: SteerFound["after_call"] = null;
+        for (const item of list.flatMap(tools)) {
+          const time = isRecord(item.time) ? item.time : {};
+          const start = toMs(time.created);
+          if (start === null || start > created) continue;
+          const end = toMs(time.completed);
+          const call = { tool: typeof item.name === "string" ? item.name : null, call_id: typeof item.id === "string" ? item.id : null, started_at: new Date(start).toISOString(), ...(end !== null ? { ended_at: new Date(end).toISOString() } : {}) };
+          if (!last || start >= Date.parse(last.started_at)) last = call;
+          if (end === null || end > created) running.push(call);
+        }
+        return { message_id: steer.id as string, created_at: new Date(created).toISOString(), running, after_call: last };
       }
       return null;
     },
