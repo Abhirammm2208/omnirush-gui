@@ -1,0 +1,3 @@
+[test]
+# The server's 1.x suites send chats through the 1.x engine (engine-v2-preview.ts: a release build ignores this).
+preload = ["./src/test-preload.ts"]

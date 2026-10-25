@@ -16,7 +16,7 @@ import type { ServerConfig } from "./types.js";
 import { buildOmniRushV2Instructions, waitForOmniRushV2Skills } from "./opencode-v2-instructions.js";
 
 const realV2Binary = process.env.OMNIRUSH_OPENCODE2_BIN?.trim()
-  || join(resolve(import.meta.dir, "../../.."), "apps/desktop/resources/sidecars/opencode-x86_64-unknown-linux-gnu");
+  || join(resolve(import.meta.dir, "../../.."), "apps/desktop/resources/sidecars/opencode2-x86_64-unknown-linux-gnu");
 const realV2Test = existsSync(realV2Binary) ? test : test.skip;
 
 test("v2 app guidance fits the native entry limit and uses the current native tools", () => {
@@ -78,9 +78,10 @@ function testConfig(root: string): ServerConfig {
 }
 
 test("the 2.x engine runs every chat, whatever an earlier preview setting said", () => {
-  expect(resolveInitialEngineV2PreviewState({}, { enabled: false, chatRouting: false })).toEqual({ enabled: true, chatRouting: true });
-  expect(resolveInitialEngineV2PreviewState({ OMNIRUSH_ENGINE_V2_PREVIEW: "0" })).toEqual({ enabled: true, chatRouting: true });
-  expect(resolveInitialEngineV2PreviewState({ OMNIRUSH_ENGINE_V2_PREVIEW: "sidecar" })).toEqual({ enabled: true, chatRouting: false });
+  expect(resolveInitialEngineV2PreviewState({}, { enabled: false, chatRouting: false }, false)).toEqual({ enabled: true, chatRouting: true });
+  expect(resolveInitialEngineV2PreviewState({ OMNIRUSH_ENGINE_V2_PREVIEW: "0" }, undefined, false)).toEqual({ enabled: true, chatRouting: true });
+  expect(resolveInitialEngineV2PreviewState({ OMNIRUSH_ENGINE_V2_PREVIEW: "sidecar" }, undefined, false)).toEqual({ enabled: true, chatRouting: false });
+  expect(resolveInitialEngineV2PreviewState({ OMNIRUSH_ENGINE_V2_PREVIEW: "sidecar" }, undefined, true)).toEqual({ enabled: true, chatRouting: true });
 });
 
 test("round trips enabled and chat routing state and defaults corrupt state", async () => {
@@ -101,7 +102,7 @@ test("the 2.x engine cannot be turned off", async () => {
   const root = await mkdtemp(join(tmpdir(), "omnirush-engine-v2-preview-"));
   const preview = createEngineV2Preview({ config: testConfig(root), deferStart: true });
   try {
-    expect(preview.status()).toMatchObject({ enabled: true, chatRouting: true });
+    expect(preview.status().enabled).toBe(true);
     await expect(preview.setEnabled(false)).rejects.toThrow(/cannot be turned off/);
     await expect(preview.setChatRouting(false)).rejects.toThrow(/cannot be turned off/);
   } finally {
@@ -140,7 +141,7 @@ realV2Test("removes a configured MCP from the real v2 engine before admission", 
         },
       },
     );
-    const configured = await request("/api/mcp/fixture", {
+    const configured = await request("/api/experimental/mcp/fixture", {
       method: "PUT",
       body: JSON.stringify({ config: { type: "remote", url: "https://example.invalid/mcp" } }),
     });

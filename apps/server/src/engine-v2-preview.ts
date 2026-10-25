@@ -19,13 +19,15 @@ import {
 } from "./runtime-opencode-config-store.js";
 import type { EnvService } from "./env-file.js";
 import { selectPrimaryCredentialEnvName } from "./managed-provider-auth.js";
-import { OMNIRUSH_SESSION_PLUGIN_ID } from "./opencode-plugins/omnirush-session-next.js";
+import { isReleaseBuild } from "./release-guard.js";
 import { engineDataDir } from "./engine-data-home.js";
 import { readMigratedSessions, seedV2StoreFromV1 } from "./engine-v2-migration.js";
 import type { ServerConfig } from "./types.js";
 
 const PREVIEW_STATE_FILE = "engine-v2-preview.json";
 const UNSET_API_KEY = "omnirush-engine-v2-preview-unset";
+/** opencode-plugins/omnirush-session-next.ts's id (server modules never import plugin files). */
+export const OMNIRUSH_SESSION_PLUGIN_ID = "omnirush.session";
 // A cold sidecar can return HTTP 503 while its model catalog initializes for 17–20 seconds.
 const CATALOG_MIRROR_TIMEOUT_MS = 60_000;
 
@@ -73,13 +75,15 @@ export interface EngineV2PreviewState {
 
 /**
  * The 2.x engine runs every new chat: on, with chats routed to it, whatever an
- * earlier preview setting or switch said. `sidecar` (tests only) leaves chats off it.
+ * earlier preview setting or switch said. `sidecar` leaves chats on the 1.x engine for the
+ * server's 1.x test suites; a release build ignores it.
  */
 export function resolveInitialEngineV2PreviewState(
   env: NodeJS.ProcessEnv,
   _persisted?: EngineV2PreviewState,
+  release = isReleaseBuild(),
 ): EngineV2PreviewState {
-  return { enabled: true, chatRouting: env.OMNIRUSH_ENGINE_V2_PREVIEW !== "sidecar" };
+  return { enabled: true, chatRouting: release || env.OMNIRUSH_ENGINE_V2_PREVIEW !== "sidecar" };
 }
 
 interface ResolvedBinary {

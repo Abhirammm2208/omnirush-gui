@@ -271,7 +271,7 @@ function startMockV2Engine(input: { provider: string; model: string }) {
       }
       if (pathname === "/api/session/active") return Response.json({ data: busy ? { ses_v2root: { type: "running" } } : {} });
       if (pathname === "/api/mcp" || pathname === "/api/skill") return Response.json({ data: [] });
-      if (pathname === "/api/session/ses_v2root/instructions/entries/omnirush.context" && request.method === "PUT") return Response.json({ data: {} });
+      if (pathname === "/api/experimental/session/ses_v2root/instructions/entries/omnirush.context" && request.method === "PUT") return Response.json({ data: {} });
       if (pathname === "/api/session/ses_v2root/prompt" && request.method === "POST") {
         prompts.push(await request.json().catch(() => null));
         turn += 1;
@@ -875,7 +875,7 @@ describe("collection gaps: the v2 mount and local workflow steps", () => {
     const bypassed = await promptV2(config, v2.connection);
     expect(bypassed.status).toBe(200);
     expect(v2.prompts).toEqual([{ text: "Do the task" }]);
-    expect(v2.received).toContain("PUT /api/session/ses_v2root/instructions/entries/omnirush.context");
+    expect(v2.received).toContain("PUT /api/experimental/session/ses_v2root/instructions/entries/omnirush.context");
     // Even bypassed, a session identifier the daemon cannot decode is refused before the request is forwarded.
     const malformed = await promptV2(config, v2.connection, "api/session/ses%E0/prompt");
     expect(malformed.status).toBe(400);

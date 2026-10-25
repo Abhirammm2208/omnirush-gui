@@ -5,7 +5,7 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { assertSessionPluginActive } from "./engine-v2-preview.js";
+import { assertSessionPluginActive, OMNIRUSH_SESSION_PLUGIN_ID } from "./engine-v2-preview.js";
 import { readMigratedSessions, seedV2StoreFromV1 } from "./engine-v2-migration.js";
 import { pluginDirectories } from "./managed-opencode-v2.js";
 import sessionPlugin from "./opencode-plugins/omnirush-session-next.js";
@@ -71,6 +71,7 @@ test("the session plugin names the chat on gateway requests and blanks secrets i
 });
 
 test("chats do not start unless the session plugin is active", async () => {
+  expect(sessionPlugin.id).toBe(OMNIRUSH_SESSION_PLUGIN_ID);
   const engine = (data: unknown, status = 200) => ({ fetchJson: async () => ({ status, json: { data } }) });
   await assertSessionPluginActive(engine([{ id: "omnirush.session", state: { status: "active" } }]), "/p");
   await expect(assertSessionPluginActive(engine([{ id: "opencode.agent", state: { status: "active" } }]), "/p")).rejects.toThrow(/not active/);

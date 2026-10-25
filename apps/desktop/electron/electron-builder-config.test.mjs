@@ -59,6 +59,9 @@ describe("Electron distribution configs", () => {
       ["mac", "opencode", "opencode-aarch64-apple-darwin", "opencode-x86_64-apple-darwin"],
       ["linux", "opencode", "opencode-aarch64-unknown-linux-gnu", "opencode-x86_64-unknown-linux-gnu"],
       ["win", "opencode.exe", "opencode-aarch64-pc-windows-msvc.exe", "opencode-x86_64-pc-windows-msvc.exe"],
+      ["mac", "opencode2", "opencode2-aarch64-apple-darwin", "opencode2-x86_64-apple-darwin"],
+      ["linux", "opencode2", "opencode2-aarch64-unknown-linux-gnu", "opencode2-x86_64-unknown-linux-gnu"],
+      ["win", "opencode2.exe", "opencode2-aarch64-pc-windows-msvc.exe", "opencode2-x86_64-pc-windows-msvc.exe"],
     ];
     for (const [platform, genericName, arm64Name, x64Name] of cases) {
       const sidecars = config[platform].extraResources.find((resource) => resource.to === "sidecars");

@@ -114,7 +114,7 @@ async function startModeServer(options: { readOnly?: boolean; approval?: ServerC
   const root = await workspaceRoot('{"permission":{"edit":"deny"},"model":"local/model"}');
   process.env.OMNIRUSH_DATA_DIR = join(root, "data");
   process.env.OMNIRUSH_TOKEN_STORE = join(root, "tokens.json");
-  delete process.env.OMNIRUSH_ENGINE_V2_PREVIEW;
+  process.env.OMNIRUSH_ENGINE_V2_PREVIEW = "sidecar";
   const engineState: { statuses: unknown; permissions: unknown[]; questions: unknown[]; statusCode: number; disposeCode: number; agentCode: number; disposals: number; probes: string[] } = {
     statuses: {}, permissions: [], questions: [], statusCode: 200, disposeCode: 200, agentCode: 200, disposals: 0, probes: [],
   };
