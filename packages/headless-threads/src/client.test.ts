@@ -61,6 +61,23 @@ function createOmniRushDouble(input?: { beats?: Beat[]; messages?: MessageWire[]
 
   const session = { id: SESSION_ID, title: "Refund policy", directory: "/workspace", time: { created: 1 } };
 
+  // The 2.x engine's shapes (wire.ts reads them back): newest first, `data`-wrapped.
+  const v2Message = (message: MessageWire) => {
+    const parts = message.parts as Array<{ type?: string; text?: string; tool?: string; callID?: string; state?: unknown }>;
+    if (message.info.role === "user") {
+      return { id: message.info.id, type: "user", time: message.info.time, text: parts.filter((part) => part.type === "text").map((part) => part.text ?? "").join("") };
+    }
+    return {
+      id: message.info.id, type: "assistant", time: message.info.time,
+      ...(message.info.error !== undefined ? { error: message.info.error } : {}),
+      ...(message.info.tokens !== undefined ? { tokens: message.info.tokens } : {}),
+      ...(message.info.cost !== undefined ? { cost: message.info.cost } : {}),
+      content: parts.map((part) => part.type === "tool" ? { type: "tool", id: part.callID, name: part.tool, state: part.state ?? {} } : { type: part.type, text: part.text }),
+    };
+  };
+  const v2Session = { id: SESSION_ID, title: session.title, location: { directory: session.directory }, time: session.time };
+  const root = "/workspace/ws_1/opencode2/api/session";
+
   const fetchImpl: HeadlessFetch = async (url, init) => {
     const parsed = new URL(url);
     const method = init?.method ?? "GET";
@@ -74,29 +91,26 @@ function createOmniRushDouble(input?: { beats?: Beat[]; messages?: MessageWire[]
       signal: init?.signal,
     });
 
-    if (method === "POST" && parsed.pathname === "/workspace/ws_1/opencode/session") {
-      return Response.json(session);
+    if (method === "POST" && parsed.pathname === root) {
+      return Response.json({ data: v2Session });
     }
-    if (method === "GET" && parsed.pathname === `/workspace/ws_1/opencode/session/${SESSION_ID}`) {
+    if (method === "GET" && parsed.pathname === `${root}/${SESSION_ID}`) {
       activeBeat = beats[Math.min(beatIndex, beats.length - 1)];
       beatIndex += 1;
-      return Response.json(session);
+      return Response.json({ data: v2Session });
     }
-    if (method === "GET" && parsed.pathname === `/workspace/ws_1/opencode/session/${SESSION_ID}/message`) {
-      return Response.json(activeBeat?.messages ?? messages);
+    if (method === "GET" && parsed.pathname === `${root}/${SESSION_ID}/message`) {
+      return Response.json({ data: (activeBeat?.messages ?? messages).map(v2Message).reverse(), cursor: {} });
     }
-    if (method === "GET" && parsed.pathname === `/workspace/ws_1/opencode/session/${SESSION_ID}/todo`) {
-      return Response.json([]);
-    }
-    if (method === "GET" && parsed.pathname === "/workspace/ws_1/opencode/session/status") {
+    if (method === "GET" && parsed.pathname === `${root}/active`) {
       const status = activeBeat?.status;
-      return Response.json(status === undefined || status.type === "idle" ? {} : { [SESSION_ID]: status });
+      return Response.json({ data: status === undefined || status.type === "idle" ? {} : { [SESSION_ID]: { type: "running" } } });
     }
-    if (method === "POST" && parsed.pathname === `/workspace/ws_1/opencode/session/${SESSION_ID}/prompt_async`) {
-      return new Response(null, { status: 204 });
+    if (method === "POST" && (parsed.pathname === `${root}/${SESSION_ID}/prompt` || parsed.pathname === `${root}/${SESSION_ID}/model`)) {
+      return Response.json({ data: {} });
     }
-    if (method === "POST" && parsed.pathname === `/workspace/ws_1/opencode/session/${SESSION_ID}/abort`) {
-      return Response.json(input?.abortResult ?? true);
+    if (method === "POST" && parsed.pathname === `${root}/${SESSION_ID}/interrupt`) {
+      return Response.json({ data: { interrupted: input?.abortResult ?? true } });
     }
     return Response.json({ code: "not_found", message: "Not found" }, { status: 404 });
   };
@@ -137,15 +151,12 @@ describe("createThread", () => {
     });
 
     expect(double.requests.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: "POST", path: "/workspace/ws_1/opencode/session" },
-      { method: "POST", path: "/workspace/ws_1/opencode/session/ses_1/prompt_async" },
+      { method: "POST", path: "/workspace/ws_1/opencode2/api/session" },
+      { method: "POST", path: "/workspace/ws_1/opencode2/api/session/ses_1/prompt" },
     ]);
-    expect(double.requests[0]?.body).toEqual({ title: "Refund policy" });
-    expect(double.requests[1]?.body).toEqual({
-      parts: [{ type: "text", text: "A customer wants a refund after 40 days." }],
-      model: { providerID: "anthropic", modelID: "claude-sonnet-5" },
-      variant: "thinking",
-    });
+    // The 2.x engine takes the model with the new session, the prompt as text.
+    expect(double.requests[0]?.body).toEqual({ title: "Refund policy", model: { id: "claude-sonnet-5", providerID: "anthropic", variant: "thinking" } });
+    expect(double.requests[1]?.body).toEqual({ text: "A customer wants a refund after 40 days." });
     expect(thread).toEqual({
       id: SESSION_ID,
       workspaceId: "ws_1",
@@ -167,7 +178,7 @@ describe("createThread", () => {
 
     await client.createThread({ title: "Refund policy" });
 
-    expect(double.requests[0]?.path).toBe("/workspace/ws_1/opencode/session");
+    expect(double.requests[0]?.path).toBe("/workspace/ws_1/opencode2/api/session");
   });
 
   test("authenticates server-to-server Cloud requests with both worker tokens", async () => {
@@ -220,7 +231,7 @@ describe("createThread", () => {
 
     await client.createThread({ title: "  Refund policy  ", prompt: "  Review it  " });
     expect(double.requests[0]?.body).toEqual({ title: "Refund policy" });
-    expect(double.requests[1]?.body).toEqual({ parts: [{ type: "text", text: "Review it" }] });
+    expect(double.requests[1]?.body).toEqual({ text: "Review it" });
 
     await expect(client.createThread({ title: "  " })).rejects.toMatchObject({
       code: "invalid_payload",
@@ -257,13 +268,12 @@ describe("sendTurn", () => {
       alreadyPresent: false,
     });
     expect(double.requests.map((request) => request.path)).toEqual([
-      "/workspace/ws_1/opencode/session/ses_1/message",
-      "/workspace/ws_1/opencode/session/ses_1/prompt_async",
+      "/workspace/ws_1/opencode2/api/session/ses_1/message?limit=200&order=desc",
+      "/workspace/ws_1/opencode2/api/session/ses_1/model",
+      "/workspace/ws_1/opencode2/api/session/ses_1/prompt",
     ]);
-    expect(double.requests[1]?.body).toEqual({
-      parts: [{ type: "text", text: "They also lost the receipt." }],
-      model: { providerID: "anthropic", modelID: "claude-sonnet-5" },
-    });
+    expect(double.requests[1]?.body).toEqual({ model: { id: "claude-sonnet-5", providerID: "anthropic" } });
+    expect(double.requests[2]?.body).toEqual({ text: "They also lost the receipt." });
   });
 
   test("falls back to the client's default model", async () => {
@@ -278,10 +288,8 @@ describe("sendTurn", () => {
 
     await client.sendTurn(SESSION_ID, { prompt: "hello" });
 
-    expect(double.requests[1]?.body).toEqual({
-      parts: [{ type: "text", text: "hello" }],
-      model: { providerID: "openai", modelID: "gpt-5" },
-    });
+    expect(double.requests[1]?.body).toEqual({ model: { id: "gpt-5", providerID: "openai" } });
+    expect(double.requests[2]?.body).toEqual({ text: "hello" });
   });
 
   test("uses a stable message id and does not submit it twice", async () => {
@@ -295,7 +303,7 @@ describe("sendTurn", () => {
     expect(acceptance.alreadyPresent).toBe(true);
     expect(acceptance.messageId).toBe("msg_run_1");
     expect(double.requests).toHaveLength(1);
-    expect(double.requests[0]?.path).toBe("/workspace/ws_1/opencode/session/ses_1/message");
+    expect(double.requests[0]?.path).toBe("/workspace/ws_1/opencode2/api/session/ses_1/message?limit=200&order=desc");
   });
 
   test("passes a new stable message id to OpenCode", async () => {
@@ -303,10 +311,7 @@ describe("sendTurn", () => {
 
     await createClient(double).sendTurn(SESSION_ID, { prompt: "Run it.", messageId: "msg_run_2" });
 
-    expect(double.requests[1]?.body).toEqual({
-      parts: [{ type: "text", text: "Run it." }],
-      messageID: "msg_run_2",
-    });
+    expect(double.requests[1]?.body).toEqual({ text: "Run it.", id: "msg_run_2" });
   });
 
   test("URL-encodes workspace and session IDs on native proxy calls", async () => {
@@ -327,14 +332,14 @@ describe("sendTurn", () => {
     await client.sendTurn("ses /?", { prompt: "hello" });
 
     expect(paths).toEqual([
-      "/workspace/ws%20%2F%3F/opencode/session/ses%20%2F%3F/message",
-      "/workspace/ws%20%2F%3F/opencode/session/ses%20%2F%3F/prompt_async",
+      "/workspace/ws%20%2F%3F/opencode2/api/session/ses%20%2F%3F/message",
+      "/workspace/ws%20%2F%3F/opencode2/api/session/ses%20%2F%3F/prompt",
     ]);
   });
 });
 
 describe("getThreadSnapshot", () => {
-  test("reads session, messages, todos, and status in parallel", async () => {
+  test("reads session, messages and status in parallel (the 2.x engine has no todos)", async () => {
     const requests: string[] = [];
     let markStarted: () => void = () => {};
     let releaseRequests: () => void = () => {};
@@ -347,29 +352,27 @@ describe("getThreadSnapshot", () => {
     const fetchImpl: HeadlessFetch = async (url) => {
       const path = new URL(url).pathname;
       requests.push(path);
-      if (requests.length === 4) markStarted();
+      if (requests.length === 3) markStarted();
       await released;
-      if (path.endsWith("/message")) return Response.json([]);
-      if (path.endsWith("/todo")) return Response.json([{ content: "Check", status: "pending", priority: "high" }]);
-      if (path.endsWith("/status")) return Response.json({ [SESSION_ID]: { type: "busy" } });
-      return Response.json({ id: SESSION_ID, title: "Refund policy", directory: "/workspace", time: { created: 1 } });
+      if (path.endsWith("/message")) return Response.json({ data: [] });
+      if (path.endsWith("/active")) return Response.json({ data: { [SESSION_ID]: {} } });
+      return Response.json({ data: { id: SESSION_ID, title: "Refund policy", location: { directory: "/workspace" }, time: { created: 1 } } });
     };
     const client = createHeadlessThreadClient({ baseUrl: BASE_URL, workspaceId: "ws_1", token: "owt_test", fetch: fetchImpl });
 
     const pending = client.getThreadSnapshot(SESSION_ID);
     await allStarted;
     expect(requests).toEqual([
-      "/workspace/ws_1/opencode/session/ses_1",
-      "/workspace/ws_1/opencode/session/ses_1/message",
-      "/workspace/ws_1/opencode/session/ses_1/todo",
-      "/workspace/ws_1/opencode/session/status",
+      "/workspace/ws_1/opencode2/api/session/ses_1",
+      "/workspace/ws_1/opencode2/api/session/ses_1/message",
+      "/workspace/ws_1/opencode2/api/session/active",
     ]);
     releaseRequests();
 
     await expect(pending).resolves.toMatchObject({
       threadId: SESSION_ID,
       status: { type: "busy" },
-      todos: [{ content: "Check", status: "pending", priority: "high" }],
+      todos: [],
     });
   });
 
@@ -491,7 +494,7 @@ describe("waitForThread", () => {
     expect(result.polls).toBe(1);
     expect(double.snapshotReads()).toBe(2);
     // Cancelling a wait must never cancel the engine turn on the caller's behalf.
-    expect(double.requests.some((request) => request.path.endsWith("/abort"))).toBe(false);
+    expect(double.requests.some((request) => request.path.endsWith("/interrupt"))).toBe(false);
   });
 
   test("matches the assistant response to the stable user message", async () => {
@@ -499,7 +502,9 @@ describe("waitForThread", () => {
       beats: [{
         status: { type: "idle" },
         messages: [
+          reply("msg_old", "user", "before"),
           reply("msg_old_answer", "assistant", "old", "msg_old"),
+          reply("msg_run_1", "user", "run"),
           reply("msg_new_answer", "assistant", "new", "msg_run_1"),
         ],
       }],
@@ -516,7 +521,7 @@ describe("waitForThread", () => {
   test("reports a terminal assistant error", async () => {
     const failed = reply("msg_failed", "assistant", undefined, "msg_run_1");
     failed.info.error = { name: "ProviderAuthError", data: { message: "Reconnect the provider." } };
-    const double = createOmniRushDouble({ beats: [{ status: { type: "idle" }, messages: [failed] }] });
+    const double = createOmniRushDouble({ beats: [{ status: { type: "idle" }, messages: [reply("msg_run_1", "user", "run"), failed] }] });
 
     const result = await createClient(double).waitForThread(SESSION_ID, {
       timeoutMs: 1_000,
@@ -540,7 +545,7 @@ describe("failures", () => {
     expect(error.code).toBe("not_found");
     expect(error.status).toBe(404);
     expect(error.method).toBe("GET");
-    expect(error.path).toBe("/workspace/ws_1/opencode/session/ses_missing");
+    expect(error.path).toBe("/workspace/ws_1/opencode2/api/session/ses_missing");
     expect(error.message).toBe("Not found");
     expect(error.body).toEqual({ code: "not_found", message: "Not found" });
   });
@@ -579,7 +584,7 @@ describe("failures", () => {
     if (!(error instanceof HeadlessThreadError)) throw new Error("expected a HeadlessThreadError");
     expect(error.code).toBe("request_failed");
     expect(error.method).toBe("GET");
-    expect(error.path).toBe("/workspace/ws_1/opencode/session/ses_1");
+    expect(error.path).toBe("/workspace/ws_1/opencode2/api/session/ses_1");
     expect(error.status).toBeNull();
   });
 
@@ -627,7 +632,7 @@ describe("failures", () => {
     try {
       await client.createThread({ title: "No timeout" });
       expect(requested).toEqual([]);
-      expect(double.requests[0]?.signal?.aborted).toBe(false);
+      expect(double.requests[0]?.signal?.aborted ?? false).toBe(false);
     } finally {
       Object.defineProperty(AbortSignal, "timeout", timeoutDescriptor);
     }
@@ -715,7 +720,7 @@ describe("abortThread", () => {
       threadId: SESSION_ID,
       accepted: false,
     });
-    expect(double.requests[0]?.path).toBe("/workspace/ws_1/opencode/session/ses_1/abort");
+    expect(double.requests[0]?.path).toBe("/workspace/ws_1/opencode2/api/session/ses_1/interrupt");
   });
 
   test("waits until the aborted thread is observably idle", async () => {

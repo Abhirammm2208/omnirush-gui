@@ -1,13 +1,15 @@
 /**
  * A function-driven client for native OmniRush.ai threads.
  *
- * Every call uses the OpenCode SDK through OmniRush.ai's workspace-scoped mount:
+ * Every call goes to the 2.x engine's API through OmniRush.ai's workspace-scoped mount:
  *
- * - `POST /workspace/:id/opencode/session` creates a thread
- * - native session reads provide messages, todos, and status
- * - native prompt and abort calls control a turn
+ * - `POST /workspace/:id/opencode2/api/session` creates a thread
+ * - native session reads provide messages and status (the 2.x engine has no todos)
+ * - native prompt and interrupt calls control a turn
+ *
+ * The engine's 2.x messages are read in the wire shape below (`{info, parts}`, wire.ts); tool names
+ * stay the engine's own.
  */
-import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { z } from "zod";
 
 import { HeadlessThreadError } from "./errors.js";
@@ -25,14 +27,13 @@ import type {
   HeadlessThreadWaitResult,
   HeadlessTurnAcceptance,
 } from "./types.js";
+import { nextCursorOf, v2MessagesToWire, v2SessionToWire } from "./v2.js";
 import {
   abortResultSchema,
   isRunning,
   sessionSchema,
   threadMessagesSchema,
   threadSnapshotSchema,
-  threadStatusesSchema,
-  threadTodosSchema,
   toSnapshot,
   toThread,
 } from "./wire.js";
@@ -43,6 +44,11 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const errorBodySchema = z
   .object({ code: z.string().optional(), message: z.string().optional() })
   .passthrough();
+
+function settled<T>(result: PromiseSettledResult<T>): T {
+  if (result.status === "rejected") throw result.reason;
+  return result.value;
+}
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -67,7 +73,7 @@ export function createHeadlessThreadClient(options: HeadlessThreadClientOptions)
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const workspacePath = `/workspace/${encodeURIComponent(workspaceId)}`;
-  const opencodePath = `${workspacePath}/opencode`;
+  const opencodePath = `${workspacePath}/opencode2/api`;
 
   function invalidCreatePayload(message: string): never {
     const path = `${opencodePath}/session`;
@@ -106,36 +112,39 @@ export function createHeadlessThreadClient(options: HeadlessThreadClientOptions)
     return signals.length === 0 ? undefined : signals.length === 1 ? signals[0] : AbortSignal.any(signals);
   }
 
-  const sdkFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request = input instanceof Request ? input : new Request(input, init);
-    const headers: Record<string, string> = {};
-    request.headers.forEach((value, key) => {
-      headers[key] = value;
-    });
-    const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.text();
-    return fetchImpl(request.url, {
-      method: request.method,
-      headers,
-      ...(body === "" ? {} : { body }),
-      redirect: "error",
-      signal: request.signal,
-    });
-  };
-  const opencode = createOpencodeClient({
-    baseUrl: `${baseUrl}${opencodePath}`,
-    headers: {
-      Authorization: `Bearer ${options.token}`,
-      ...(options.hostToken === undefined ? {} : { "X-OmniRush-Host-Token": options.hostToken }),
-    },
-    redirect: "error",
-    fetch: Object.assign(sdkFetch, { preconnect: () => {} }),
-  });
-
   type SdkResult<T> = {
     data?: T;
     error?: unknown;
     response?: Response;
+    /** The whole answer (its `cursor` too). */
+    payload?: unknown;
   };
+
+  /** One call to the engine's API (`data` unwrapped), as the SDK reported it. */
+  async function call(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<SdkResult<unknown>> {
+    let response: Response;
+    try {
+      response = await fetchImpl(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${options.token}`,
+        ...(options.hostToken === undefined ? {} : { "X-OmniRush-Host-Token": options.hostToken }),
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      redirect: "error",
+      signal: requestSignal(signal),
+    });
+    } catch (error) {
+      return { error: { message: error instanceof Error ? error.message : String(error) } };
+    }
+    const text = await response.text();
+    let payload: unknown = undefined;
+    try { payload = text ? JSON.parse(text) : undefined; } catch { payload = text; }
+    if (!response.ok) return { error: payload ?? {}, response };
+    const data = payload !== null && typeof payload === "object" && "data" in payload ? (payload as { data: unknown }).data : payload;
+    return { data, response, payload };
+  }
 
   function sdkSuccess<T>(result: SdkResult<T>, method: string, path: string): T | undefined {
     if (result.error === undefined) return result.data;
@@ -167,37 +176,45 @@ export function createHeadlessThreadClient(options: HeadlessThreadClientOptions)
     });
   }
 
-  async function readMessages(threadId: string, signal?: AbortSignal) {
+  /** The thread's messages, oldest first, in the wire shape (every page; `limit`: the newest that many). */
+  async function readMessages(threadId: string, signal?: AbortSignal, limit?: number) {
     const path = `${opencodePath}/session/${encodeURIComponent(threadId)}/message`;
-    return sdkJson(
-      threadMessagesSchema,
-      await opencode.session.messages({ sessionID: threadId }, { signal: requestSignal(signal) }),
-      "GET",
-      path,
-    );
+    const out: unknown[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 200; page += 1) {
+      const query = new URLSearchParams({ limit: "200", ...(cursor ? { cursor } : { order: "desc" }) });
+      const result = await call("GET", `${path}?${query}`, undefined, signal);
+      const data = sdkSuccess(result, "GET", path);
+      const items = Array.isArray(data) ? data : [];
+      out.push(...items);
+      cursor = nextCursorOf(result.payload);
+      if (!cursor || items.length === 0 || (limit !== undefined && out.length >= limit)) break;
+    }
+    const wire = v2MessagesToWire(out.reverse());
+    return sdkJson(threadMessagesSchema, { data: limit === undefined ? wire : wire.slice(-limit) }, "GET", path);
   }
 
   async function getThreadSnapshot(threadId: string, input?: { signal?: AbortSignal; limit?: number }): Promise<HeadlessThreadSnapshot> {
-    const encodedThreadId = encodeURIComponent(threadId);
-    const sessionPath = `${opencodePath}/session/${encodedThreadId}`;
-    const messagesPath = `${sessionPath}/message`;
-    const todosPath = `${sessionPath}/todo`;
-    const statusPath = `${opencodePath}/session/status`;
-    const [sessionResult, messagesResult, todosResult, statusResult] = await Promise.all([
-      opencode.session.get({ sessionID: threadId }, { signal: requestSignal(input?.signal) }),
-      opencode.session.messages({ sessionID: threadId, limit: input?.limit }, { signal: requestSignal(input?.signal) }),
-      opencode.session.todo({ sessionID: threadId }, { signal: requestSignal(input?.signal) }),
-      opencode.session.status(undefined, { signal: requestSignal(input?.signal) }),
+    const sessionPath = `${opencodePath}/session/${encodeURIComponent(threadId)}`;
+    const statusPath = `${opencodePath}/session/active`;
+    const [sessionRead, messagesRead, statusRead] = await Promise.allSettled([
+      call("GET", sessionPath, undefined, input?.signal),
+      readMessages(threadId, input?.signal, input?.limit),
+      call("GET", statusPath, undefined, input?.signal),
     ]);
-    const session = sdkJson(sessionSchema, sessionResult, "GET", sessionPath);
-    const messages = sdkJson(threadMessagesSchema, messagesResult, "GET", messagesPath);
-    const todos = sdkJson(threadTodosSchema, todosResult, "GET", todosPath);
-    const statuses = sdkJson(threadStatusesSchema, statusResult, "GET", statusPath);
+    // The session's own failure is reported first (it says the most: a missing thread).
+    const sessionResult = settled(sessionRead);
+    if (sessionResult.error !== undefined) sdkSuccess(sessionResult, "GET", sessionPath);
+    const messages = settled(messagesRead);
+    const statusResult = settled(statusRead);
+    const session = sdkJson(sessionSchema, { ...sessionResult, data: v2SessionToWire(sessionResult.data) }, "GET", sessionPath);
+    const active = sdkSuccess(statusResult, "GET", statusPath);
+    const running = active !== null && typeof active === "object" && Object.hasOwn(active, threadId);
     return toSnapshot(threadSnapshotSchema.parse({
       session,
       messages,
-      todos,
-      status: statuses[threadId] ?? { type: "idle" },
+      todos: [],
+      status: running ? { type: "busy" } : { type: "idle" },
     }));
   }
 
@@ -205,21 +222,14 @@ export function createHeadlessThreadClient(options: HeadlessThreadClientOptions)
     const model = input.model ?? options.defaultModel;
     const createPath = `${opencodePath}/session`;
     const prompt = initialPrompt(input.prompt);
-    const session = sdkJson(
-      sessionSchema,
-      await opencode.session.create({ title: createTitle(input.title) }, { signal: requestSignal(input.signal) }),
-      "POST",
-      createPath,
-    );
+    const created = await call("POST", createPath, {
+      title: createTitle(input.title),
+      ...(model === undefined ? {} : { model: { id: model.modelId, providerID: model.providerId, ...(model.variant === undefined ? {} : { variant: model.variant }) } }),
+    }, input.signal);
+    const session = sdkJson(sessionSchema, { ...created, data: v2SessionToWire(created.data) }, "POST", createPath);
     if (prompt !== undefined) {
-      const promptPath = `${opencodePath}/session/${encodeURIComponent(session.id)}/prompt_async`;
-      const result = await opencode.session.promptAsync({
-        sessionID: session.id,
-        parts: [{ type: "text", text: prompt }],
-        ...(model === undefined ? {} : { model: { providerID: model.providerId, modelID: model.modelId } }),
-        ...(model?.variant === undefined ? {} : { variant: model.variant }),
-      }, { signal: requestSignal(input.signal) });
-      sdkSuccess(result, "POST", promptPath);
+      const promptPath = `${opencodePath}/session/${encodeURIComponent(session.id)}/prompt`;
+      sdkSuccess(await call("POST", promptPath, { text: prompt }, input.signal), "POST", promptPath);
     }
     return toThread(session, workspaceId, prompt !== undefined);
   }
@@ -231,15 +241,12 @@ export function createHeadlessThreadClient(options: HeadlessThreadClientOptions)
     if (input.messageId && messages.some((message) => message.info.id === input.messageId && message.info.role === "user")) {
       return { threadId, acceptedAt: now(), messageCountBefore, messageId: input.messageId, alreadyPresent: true };
     }
-    const path = `${opencodePath}/session/${encodeURIComponent(threadId)}/prompt_async`;
-    const result = await opencode.session.promptAsync({
-      sessionID: threadId,
-      parts: [{ type: "text", text: input.prompt }],
-      ...(input.messageId === undefined ? {} : { messageID: input.messageId }),
-      ...(model === undefined ? {} : { model: { providerID: model.providerId, modelID: model.modelId } }),
-      ...(model?.variant === undefined ? {} : { variant: model.variant }),
-    }, { signal: requestSignal(input.signal) });
-    sdkSuccess(result, "POST", path);
+    const session = `${opencodePath}/session/${encodeURIComponent(threadId)}`;
+    if (model !== undefined) {
+      sdkSuccess(await call("POST", `${session}/model`, { model: { id: model.modelId, providerID: model.providerId, ...(model.variant === undefined ? {} : { variant: model.variant }) } }, input.signal), "POST", `${session}/model`);
+    }
+    const path = `${session}/prompt`;
+    sdkSuccess(await call("POST", path, { text: input.prompt, ...(input.messageId === undefined ? {} : { id: input.messageId }) }, input.signal), "POST", path);
     return { threadId, acceptedAt: now(), messageCountBefore, messageId: input.messageId ?? null, alreadyPresent: false };
   }
 
@@ -311,13 +318,11 @@ export function createHeadlessThreadClient(options: HeadlessThreadClientOptions)
   }
 
   async function abortThread(threadId: string, input?: { signal?: AbortSignal }): Promise<HeadlessAbortResult> {
-    const path = `${opencodePath}/session/${encodeURIComponent(threadId)}/abort`;
-    const accepted = sdkJson(
-      abortResultSchema,
-      await opencode.session.abort({ sessionID: threadId }, { signal: requestSignal(input?.signal) }),
-      "POST",
-      path,
-    );
+    const path = `${opencodePath}/session/${encodeURIComponent(threadId)}/interrupt`;
+    const result = await call("POST", path, {}, input?.signal);
+    const data = sdkSuccess(result, "POST", path);
+    const interrupted = data !== null && typeof data === "object" && "interrupted" in data ? (data as { interrupted: unknown }).interrupted : data;
+    const accepted = sdkJson(abortResultSchema, { data: interrupted }, "POST", path);
     return { threadId, accepted };
   }
 
