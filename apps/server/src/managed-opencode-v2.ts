@@ -258,7 +258,8 @@ export async function createManagedOpencodeV2Server(
             input: modalities.input ?? ["text"],
             output: modalities.output ?? ["text"],
           },
-          limit: config.limit ?? { context: 128_000, output: 8_192 },
+          // No catalog limit: the engine's own default, as stock (an output cap of 32000 tokens).
+          ...(isRecord(config.limit) ? { limit: config.limit } : {}),
           ...(typeof config.family === "string" ? { family: config.family } : {}),
           ...(isRecord(config.options) ? { settings: config.options } : {}),
           ...(isRecord(config.headers) ? { headers: config.headers } : {}),
