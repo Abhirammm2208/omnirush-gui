@@ -18,6 +18,11 @@
 // 1, so the gateway can bind it on the spot when the explicit bind failed.
 // No `strict_sessions` (an older server): no bind, no header.
 //
+// A chat may switch between the models of one provider (GET /omnirush/v1/models
+// `switch_group`, the server's grouping): the server binds the chat to its
+// first model and serves each request on the model it names. A model with no
+// group (Claude, an older server) is a new chat (`switchableModels`).
+//
 // The same file ships in omnirush-cli (src/model-modes/) and omnirush-gui
 // (apps/server/src/model-modes/); PARITY.sha256 lists it in both. No imports.
 
@@ -55,10 +60,37 @@ export function strictSessions(capabilities) {
   };
 }
 
-/** The plain refusal of a request on another model or mode than the chat's binding. */
-export function bindingConflictMessage(binding, model) {
+const GROUP = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+
+/** A catalog entry's `switch_group` (the provider a chat may switch within), else null. */
+export function switchGroup(entry) {
+  const group = entry && typeof entry === "object" ? entry.switch_group : null;
+  return typeof group === "string" && GROUP.test(group) ? group : null;
+}
+
+/**
+ * Whether a chat on `bound` may go on with `asked` (catalog ids): the same
+ * model, or two entries of `catalog` with one `switch_group`. An id not in
+ * the catalog, or one without a group, is only itself.
+ */
+export function switchableModels(catalog, bound, asked) {
+  if (bound === asked) return true;
+  const list = Array.isArray(catalog) ? catalog : [];
+  const group = (id) => switchGroup(list.find((entry) => entry && entry.id === id));
+  const first = group(bound);
+  return first !== null && first === group(asked);
+}
+
+/**
+ * The plain refusal of a request on another model or mode than the chat's
+ * binding. Given the chat's `mode`, a binding in another mode is the mode's
+ * refusal: the server allows a model of the binding's provider, so the mode is
+ * what it refused then.
+ */
+export function bindingConflictMessage(binding, model, mode = null) {
   const bound = binding && typeof binding === "object" ? binding : {};
-  if (typeof bound.model === "string" && bound.model && bound.model !== model) return `This chat runs on ${bound.model}. Start a new chat to use ${model}.`;
+  const modeOff = typeof mode === "string" && typeof bound.mode === "string" && bound.mode !== mode;
+  if (typeof bound.model === "string" && bound.model && bound.model !== model && !modeOff) return `This chat runs on ${bound.model}. Start a new chat to use ${model}.`;
   if (bound.mode === "box") return "This chat runs in the sandbox. Start a new chat to run outside it.";
   if (bound.mode === "native") return "This chat runs outside the sandbox. Start a new chat to run in it.";
   return "This chat runs on another model. Start a new chat to use this one.";
@@ -123,7 +155,7 @@ export function sessionBinder(post, { timeoutMs = BIND_TIMEOUT_MS } = {}) {
     const status = answer ? answer.status : 0;
     const detail = detailOf(answer);
     if (detail === SESSION_BINDING_CONFLICT) {
-      return { refused: { code: SESSION_BINDING_CONFLICT, message: bindingConflictMessage(answer.body.binding, chat.model), retry: false } };
+      return { refused: { code: SESSION_BINDING_CONFLICT, message: bindingConflictMessage(answer.body.binding, chat.model, chat.mode), retry: false } };
     }
     if (detail === SESSION_MODEL_USED) {
       return { refused: { code: SESSION_MODEL_USED, message: modelUsedMessage(answer.body.models_used, chat.model), retry: false } };

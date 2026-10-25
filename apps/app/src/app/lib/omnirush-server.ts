@@ -611,7 +611,7 @@ export type OmniRushSubagentModelState = {
   /** Whether an omnirush.ai account is signed in (its models can run). */
   signedIn: boolean;
   /** The account's model catalog, in the backend's order. */
-  models: Array<{ id: string; name: string; family: string | null; default: boolean; efforts: string[]; modes?: Array<"native" | "box"> }>;
+  models: Array<{ id: string; name: string; family: string | null; default: boolean; efforts: string[]; modes?: Array<"native" | "box">; switch_group?: string }>;
 };
 
 export type OmniRushDesktopCloudSyncChange = {

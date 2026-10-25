@@ -51,6 +51,19 @@ export function modeSwitchNote(models: CatalogModels | undefined, mode: Mode, fr
   return `${name(from)} isn't available ${mode === "box" ? "in sandbox projects" : "outside the sandbox"}. Using ${name(to)} here.`;
 }
 
+/**
+ * Whether a started chat on `current` may go on with `next`: two catalog
+ * models of one provider (`switch_group`, the server's grouping). A model with
+ * no group (Claude, an older server) is a new chat. Mirrors
+ * apps/server/src/model-modes/strict-sessions.mjs switchableModels.
+ */
+export function switchableModel(models: CatalogModels | undefined, current: ModelRef, next: ModelRef): boolean {
+  if (current.providerID !== "omnirush" || next.providerID !== "omnirush") return false;
+  const group = (id: string) => models?.find((entry) => entry.id === id)?.switch_group ?? null;
+  const first = group(current.modelID);
+  return first !== null && first === group(next.modelID);
+}
+
 /** "This chat runs on Kimi K3.1 Pro. Start a new chat to use GPT 6 Astra." */
 export function fixedModelNote(models: CatalogModels | undefined, current: ModelRef, wanted: ModelRef): string {
   const name = (ref: ModelRef) => models?.find((entry) => entry.id === ref.modelID)?.name ?? ref.modelID;
@@ -112,6 +125,8 @@ export function useProjectModelModes(
     fallback: (model: ModelRef | null | undefined) => modeFallbackModel(models, mode, model),
     note: (from: ModelRef, to: ModelRef) => modeSwitchNote(models, mode ?? "native", from, to),
     fixedNote: (current: ModelRef, wanted: ModelRef) => fixedModelNote(models, current, wanted),
+    /** A started chat may go on with `next` (same provider). */
+    switchable: (current: ModelRef, next: ModelRef) => switchableModel(models, current, next),
     chatNote: (model: ModelRef) => chatModeNote(models, mode ?? "native", model),
   }), [mode, models]);
   useEffect(() => {

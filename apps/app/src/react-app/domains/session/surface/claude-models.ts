@@ -69,19 +69,20 @@ export type ModelPick =
 
 /**
  * What picking `next` does. `current` is the chat's model and `started` says it
- * already ran (its model is fixed: one model per chat). An unavailable Claude
- * model is explained first, wherever it is picked; a different model in a
- * started chat offers a new chat; in a fresh chat a Claude model opens Claude
+ * already ran (its provider is fixed). An unavailable Claude model is explained
+ * first, wherever it is picked; a model of another provider in a started chat
+ * offers a new chat, one of its provider (`switchable`, model-modes.ts
+ * switchableModel) is switched to; in a fresh chat a Claude model opens Claude
  * and any other model is simply switched to.
  */
-export function decideModelPick(input: { next: ModelRef; current: ModelRef | null; started: boolean; claude: ClaudeModelsState }): ModelPick {
-  const { next, current, started, claude } = input;
+export function decideModelPick(input: { next: ModelRef; current: ModelRef | null; started: boolean; claude: ClaudeModelsState; switchable?: (current: ModelRef, next: ModelRef) => boolean }): ModelPick {
+  const { next, current, started, claude, switchable } = input;
   const same = Boolean(current && current.providerID === next.providerID && current.modelID === next.modelID);
   if (same) return { kind: "same" };
   if (isClaudeModel(next) && !claude.models.includes(next.modelID)) {
     return { kind: "unavailable", message: claudeUnavailableMessage(claudeModelName(claude, next.modelID), claude.reason) };
   }
-  if (started && current) return { kind: "new_chat" };
+  if (started && current && !(switchable?.(current, next) ?? false)) return { kind: "new_chat" };
   return isClaudeModel(next) ? { kind: "claude" } : { kind: "switch" };
 }
 

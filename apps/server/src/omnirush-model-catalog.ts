@@ -22,6 +22,7 @@ import type { ServerConfig } from "./types.js";
 import { writeFileAtomic } from "./atomic-write.js";
 import { modelHasWebSearch, type WebSearchSwitch } from "./web-search.js";
 import { modelModes, type ModelMode } from "./model-modes/model-modes.mjs";
+import { switchGroup } from "./model-modes/strict-sessions.mjs";
 
 /** Every effort a catalog model may list, lowest first. */
 export const OMNIRUSH_MODEL_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -52,6 +53,8 @@ export type OmniRushCatalogModel = {
   };
   /** Where the model may run (model-modes/); absent means both. Kept only when the backend lists it. */
   modes?: ModelMode[];
+  /** The provider a chat may switch within (model-modes/strict-sessions.mjs); absent: none, a new chat. */
+  switch_group?: string;
 };
 
 /** Models in the backend's order, default first. Never empty. */
@@ -160,6 +163,7 @@ function sanitizeModel(raw: unknown): OmniRushCatalogModel | null {
       file_input: flag("file_input"),
     },
     ...(Array.isArray(raw.modes) ? { modes: modelModes(raw) } : {}),
+    ...(switchGroup(raw) ? { switch_group: switchGroup(raw)! } : {}),
   };
 }
 

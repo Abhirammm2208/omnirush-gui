@@ -11,6 +11,7 @@ import path from "node:path";
 import { OmniRushGatewayBroker } from "../omnirush-gateway-broker.js";
 import { sanitizeOmniRushModelCatalog } from "../omnirush-model-catalog.js";
 import { modelAllowedIn, modelForMode, modelModes, notInModeMessage, projectMode } from "./model-modes.mjs";
+import { bindingConflictMessage, switchableModels } from "./strict-sessions.mjs";
 
 const CATALOG = sanitizeOmniRushModelCatalog({
   data: [
@@ -120,6 +121,39 @@ describe("model modes", () => {
     expect((await b.handle(request({ model: "kimi-k3.1-pro" }, { "x-omnirush-session-id": "ses_one" }, "responses/compact"), "responses/compact")).status).toBe(200);
     expect((await b.handle(request({ model: "gpt-6-astra", tools }, { "x-omnirush-session-id": "ses_two" }), "responses")).status).toBe(200);
     expect(calls.map((c) => c.model)).toEqual(["kimi-k3.1-pro", "kimi-k3.1-pro", "kimi-k3.1-pro", "gpt-6-astra"]);
+  });
+
+  test("broker: a chat switches between the models of one provider; another provider or no group is refused", async () => {
+    const catalog = sanitizeOmniRushModelCatalog({ data: [
+      { id: "gpt-6-astra", default: true, switch_group: "openai" }, { id: "gpt-6.1-sol", switch_group: "openai" }, { id: "gpt-6-sol", switch_group: "openai" },
+      { id: "kimi-k3.1-pro", switch_group: "kimi" }, { id: "gpt-old" },
+    ] })!;
+    expect(catalog.find((m) => m.id === "gpt-6.1-sol")?.switch_group).toBe("openai");
+    expect(catalog.find((m) => m.id === "gpt-old")?.switch_group).toBeUndefined();
+    expect(switchableModels(catalog, "gpt-6-astra", "gpt-6.1-sol") && switchableModels(catalog, "gpt-6.1-sol", "gpt-6-sol")).toBe(true);
+    for (const other of ["kimi-k3.1-pro", "gpt-old", "claude-opus-5-5"]) expect(switchableModels(catalog, "gpt-6-astra", other)).toBe(false);
+    expect(switchableModels(null, "gpt-6-astra", "gpt-6.1-sol")).toBe(false);
+    expect(bindingConflictMessage({ model: "gpt-6-astra", mode: "box" }, "gpt-6.1-sol", "native")).toBe("This chat runs in the sandbox. Start a new chat to run outside it.");
+    const calls: Call[] = [];
+    const b = new OmniRushGatewayBroker({
+      credentials: { gatewayUrl: "https://gateway.example/omnirush/v1", accessToken: "access-token", refreshToken: "refresh-token" },
+      engineToken: "local-engine-token",
+      switchable: async (bound, asked) => switchableModels(catalog, bound, asked),
+      fetch: async (input, init) => {
+        const raw = init?.body;
+        calls.push({ model: JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw as ArrayBuffer)).model, box: null, path: new URL(String(input)).pathname });
+        return Response.json({ output: [] });
+      },
+    });
+    // Each request goes up on the model it named, a sub-agent's too.
+    for (const model of ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra"]) expect((await b.handle(request({ model }, { "x-omnirush-session-id": "ses_sw" }), "responses")).status).toBe(200);
+    expect((await b.handle(request({ model: "gpt-6.1-sol" }, { "x-omnirush-session-id": "ses_kid", "x-parent-session-id": "ses_sw" }), "responses")).status).toBe(200);
+    for (const model of ["kimi-k3.1-pro", "gpt-old"]) {
+      const refused = await b.handle(request({ model }, { "x-omnirush-session-id": "ses_sw" }), "responses");
+      expect(refused.status).toBe(400);
+      expect(((await refused.json()) as { error: { code: string; message: string } }).error).toMatchObject({ code: "session_model_fixed", message: `This chat runs on gpt-6-astra. Start a new chat to use ${model}.` });
+    }
+    expect(calls.map((c) => c.model)).toEqual(["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-6.1-sol"]);
   });
 
   test("broker: a new process keeps saved model pins and refuses corrupt pins", async () => {

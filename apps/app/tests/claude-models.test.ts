@@ -10,6 +10,8 @@ import {
   setUpClaudeSandbox,
   type ClaudeModelsState,
 } from "../src/react-app/domains/session/surface/claude-models";
+import { switchableModel } from "../src/react-app/domains/session/surface/model-modes";
+import { switchableModels as sharedSwitchable } from "../../server/src/model-modes/strict-sessions.mjs";
 
 const opus = { providerID: "omnirush", modelID: "claude-opus-5-5" };
 const sonnet = { providerID: "omnirush", modelID: "claude-sonnet-5-5" };
@@ -55,6 +57,30 @@ describe("popup decision", () => {
     expect(decideModelPick({ next: sol, current: astra, started: true, claude: allowed })).toEqual({ kind: "new_chat" });
     expect(decideModelPick({ next: sonnet, current: astra, started: true, claude: allowed })).toEqual({ kind: "new_chat" });
     expect(decideModelPick({ next: astra, current: astra, started: true, claude: allowed })).toEqual({ kind: "same" });
+  });
+
+  test("a started chat switches within its provider without the popup; another provider or no group offers a new chat", () => {
+    const models = [
+      { id: "gpt-6-astra", name: "GPT 6 Astra", family: "OpenAI", default: true, efforts: [], switch_group: "openai" },
+      { id: "gpt-6.1-sol", name: "GPT 6.1 Sol", family: "OpenAI", default: false, efforts: [], switch_group: "openai" },
+      { id: "gpt-6-sol", name: "GPT 6 Sol", family: "OpenAI", default: false, efforts: [], switch_group: "openai" },
+      { id: "kimi-k3.1-pro", name: "Kimi K3.1 Pro", family: "Kimi", default: false, efforts: [], switch_group: "kimi" },
+      { id: "gpt-old", name: "Old", family: "OpenAI", default: false, efforts: [] },
+    ];
+    const switchable = (current: typeof astra, next: typeof astra) => switchableModel(models, current, next);
+    const sol6 = { providerID: "omnirush", modelID: "gpt-6-sol" };
+    for (const [current, next] of [[astra, sol], [sol, sol6], [sol6, astra]]) {
+      expect(decideModelPick({ next, current, started: true, claude: allowed, switchable })).toEqual({ kind: "switch" });
+    }
+    for (const next of [{ providerID: "omnirush", modelID: "kimi-k3.1-pro" }, { providerID: "omnirush", modelID: "gpt-old" }, sonnet, { providerID: "openai", modelID: "gpt-6.1-sol" }]) {
+      expect(decideModelPick({ next, current: astra, started: true, claude: allowed, switchable })).toEqual({ kind: "new_chat" });
+    }
+    // The same rule as the shared module's (apps/server/src/model-modes/strict-sessions.mjs).
+    for (const a of models) for (const b of models) {
+      expect(switchableModel(models, { providerID: "omnirush", modelID: a.id }, { providerID: "omnirush", modelID: b.id }) || a.id === b.id).toBe(sharedSwitchable(models, a.id, b.id));
+    }
+    // No group known (an older server): a new chat.
+    expect(decideModelPick({ next: sol, current: astra, started: true, claude: allowed, switchable: (c, n) => switchableModel(undefined, c, n) })).toEqual({ kind: "new_chat" });
   });
 
   test("an account without Claude is told plainly, wherever it picks, with no switch", () => {
