@@ -3,6 +3,19 @@
   "schema": 1,
   "cli": [
     {
+      "version": "2.7.1",
+      "date": "2026-10-25",
+      "new": [
+        "Claude Opus 5.5 and Claude Sonnet 5.5 are in the model picker in every project when your account has them. Picking one starts a Claude chat in this folder and turns the sandbox on for it. Claude needs Docker or Podman on this computer for now."
+      ],
+      "improved": [
+        "In a chat you can now switch to another model from the same provider. Picking a model from another provider offers to start a new chat with it, since a chat keeps one provider."
+      ],
+      "fixed": [
+        "Uploads are more complete: the first chat after OmniRush starts follows the server's current upload settings, and a new chat's automatic title goes up with the chat."
+      ]
+    },
+    {
       "version": "2.7.0",
       "date": "2026-10-24",
       "new": [
@@ -279,13 +292,14 @@
       "version": "3.7.6",
       "date": "2026-10-25",
       "new": [
-        "Claude Opus 5.5 and Claude Sonnet 5.5 are in the model picker in every project. Picking one sets up the project's sandbox and opens a Claude chat on that model (for now Claude also needs Docker on this computer). If your account doesn't have Claude yet, the app says so."
+        "Claude Opus 5.5 and Claude Sonnet 5.5 are in the model picker in every project. Picking one sets up the project's sandbox and opens a Claude chat on that model (for now Claude also needs Docker or Podman on this computer). If your account doesn't have Claude yet, the app says so."
       ],
       "improved": [
-        "Picking another model in a chat that already ran now offers to start a new chat with it, since a chat keeps one model."
+        "In a chat you can now switch to another model from the same provider. Picking a model from another provider offers to start a new chat with it, since a chat keeps one provider."
       ],
       "fixed": [
-        "Stop now clears a message stuck on “We need to check the previous message”, without sending it again."
+        "Stop now clears a message stuck on “We need to check the previous message”, without sending it again.",
+        "Uploads are more complete: a new chat's automatic title now goes up with the chat."
       ]
     },
     {
