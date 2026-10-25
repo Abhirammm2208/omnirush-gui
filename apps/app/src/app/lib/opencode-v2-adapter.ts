@@ -237,6 +237,8 @@ function mapV2Session(value: unknown, directory: string | undefined, eventCreate
   const updated = readNumber(time, "updated") ?? readNumber(source, "updated") ?? created;
   const archived = readNumber(time, "archived");
   const parentID = readString(source, "parentID");
+  const revert = readRecord(source, "revert");
+  const revertMessageID = readString(revert, "messageID");
   const mapped: Session = {
     id,
     slug: readString(source, "slug") ?? id,
@@ -251,6 +253,11 @@ function mapV2Session(value: unknown, directory: string | undefined, eventCreate
       ...(archived === undefined ? {} : { archived }),
     },
     ...(parentID ? { parentID } : {}),
+    ...(revertMessageID ? { revert: {
+      messageID: revertMessageID,
+      ...(readString(revert, "partID") ? { partID: readString(revert, "partID") } : {}),
+      ...(readString(revert, "snapshot") ? { snapshot: readString(revert, "snapshot") } : {}),
+    } } : {}),
   };
   return mapped;
 }
@@ -258,15 +265,18 @@ function mapV2Session(value: unknown, directory: string | undefined, eventCreate
 function messageRole(value: Record<string, unknown>): V2MessageRole {
   const raw = readString(value, "role") ?? readString(value, "type");
   if (raw === "user") return "user";
-  if (raw === "system" || raw === "synthetic" || raw === "compaction") return "system";
+  // Turn-end markers and context switches carry no visible conversation.
+  if (raw === "system" || raw === "synthetic" || raw === "compaction" || raw === "idle" || raw?.endsWith("-switched")) return "system";
   return "assistant";
 }
 
 function parseToolInput(value: unknown, tool?: string): Record<string, unknown> {
   if (isRecord(value)) {
-    return tool === "subagent" && typeof value.agent === "string"
-      ? { subagent_type: value.agent, ...value }
-      : value;
+    // Display-only aliases for the v1 tool cards; native fields stay as sent.
+    if (tool === "subagent" && typeof value.agent === "string") return { subagent_type: value.agent, ...value };
+    if ((tool === "read" || tool === "edit" || tool === "write") && typeof value.path === "string") return { filePath: value.path, ...value };
+    if (tool === "skill" && typeof value.id === "string") return { name: value.id, ...value };
+    return value;
   }
   if (typeof value !== "string" || value === "") return {};
   try {
@@ -278,7 +288,7 @@ function parseToolInput(value: unknown, tool?: string): Record<string, unknown> 
 }
 
 function compatibleToolName(tool: string): string {
-  return tool === "shell" ? "bash" : tool === "subagent" ? "task" : tool;
+  return tool === "shell" ? "bash" : tool === "subagent" ? "task" : tool === "patch" ? "apply_patch" : tool;
 }
 
 function toolMetadata(tool: string, metadata: Record<string, unknown>): Record<string, unknown> {
@@ -408,6 +418,18 @@ function mapV2MessageParts(
   sessionID: string,
   messageCreated: number,
 ): Part[] {
+  if (readString(value, "type") === "shell") {
+    const part = mapV2ToolPart({
+      id: readString(value, "shellID") ?? messageID,
+      name: "shell",
+      state: {
+        status: readString(value, "status") === "running" ? "running" : "completed",
+        input: { command: readString(value, "command") ?? "" },
+        result: readString(readRecord(value, "output"), "output") ?? "",
+      },
+    }, messageID, sessionID, messageCreated);
+    return part ? [part] : [];
+  }
   if (Array.isArray(value.content)) {
     const ordinals = { text: 0, reasoning: 0 };
     return value.content.flatMap<Part>((entry) => {
@@ -1050,7 +1072,7 @@ export function translateV2Event(
 
   if (type === "permission.replied" || type === "permission.v2.replied") {
     const requestID = readString(properties, "requestID");
-    const reply = readString(properties, "reply");
+    const reply = readString(properties, "decision") ?? readString(properties, "reply");
     if (!sessionID || !requestID || (reply !== "once" && reply !== "always" && reply !== "reject")) return null;
     return [{ type: "permission.replied", properties: { sessionID, requestID, reply } }];
   }
@@ -1081,6 +1103,13 @@ export function translateV2Event(
     const title = readString(properties, "title");
     if (!sessionID || title === undefined) return null;
     return [{ type: "session.updated", properties: { info: { id: sessionID, title } } }];
+  }
+
+  if (type === "session.revert.staged" || type === "session.revert.cleared" || type === "session.revert.committed") {
+    const messageID = type === "session.revert.staged" ? readString(readRecord(properties, "revert"), "messageID") : undefined;
+    if (!sessionID) return null;
+    // A session.updated without a cursor clears it, matching a cleared or committed revert.
+    return [{ type: "session.updated", properties: { info: { id: sessionID, ...(messageID ? { revert: { messageID } } : {}) } } }];
   }
 
   if (type === "session.deleted") {
@@ -1369,7 +1398,7 @@ export function createClientV2(
       "POST",
       `/api/session/${encodeURIComponent(parameters.sessionID)}/permission/${encodeURIComponent(parameters.requestID)}/reply`,
       {
-        reply: parameters.reply ?? "once",
+        decision: parameters.reply ?? "once",
         ...(parameters.message ? { message: parameters.message } : {}),
       },
       options?.signal,
@@ -1444,7 +1473,7 @@ export function createClientV2(
   const listQuestions = async (
     _parameters: DirectoryParameters = {}, options?: RequestOptions,
   ): Promise<FieldsResult<QuestionRequest[]>> => {
-    const result = await request("GET", "/api/form/request", undefined, options?.signal);
+    const result = await request("GET", "/api/form", undefined, options?.signal);
     if (!result.response.ok) return failedResult(result);
     const questions = responseItems(result.payload).flatMap((item) => {
       const question = mapV2Question(item);
@@ -1468,7 +1497,7 @@ export function createClientV2(
     const question = questionFormsByID.get(parameters.requestID);
     if (!question) return {
       error: { name: "QuestionNotFound", requestID: parameters.requestID },
-      request: new Request(`${baseUrl}/api/form/request`),
+      request: new Request(`${baseUrl}/api/form`),
       response: new Response(null, { status: 404 }),
     };
     const answer = parameters.answers ? Object.fromEntries(question.fields.map((field, index) => {
@@ -1476,9 +1505,10 @@ export function createClientV2(
         field.options.find((option) => option.label === label)?.value ?? label);
       return [field.key, field.multiple ? values : values[0] ?? ""];
     })) : undefined;
-    const result = await request("POST",
-      `/api/session/${encodeURIComponent(question.request.sessionID)}/form/${encodeURIComponent(parameters.requestID)}/${answer ? "reply" : "cancel"}`,
-      answer ? { answer } : undefined, options?.signal);
+    const formPath = `/api/session/${encodeURIComponent(question.request.sessionID)}/form/${encodeURIComponent(parameters.requestID)}`;
+    const result = answer
+      ? await request("POST", `${formPath}/reply`, { answer }, options?.signal)
+      : await request("DELETE", formPath, undefined, options?.signal);
     if (!result.response.ok) return failedResult(result);
     questionFormsByID.delete(parameters.requestID);
     return successfulResult(result, true);
@@ -1494,6 +1524,14 @@ export function createClientV2(
     if (session) return successfulResult(result, session);
     return failedResult({ ...result, payload: { name: "InvalidV2SessionResponse" } });
   };
+
+  const selectModel = (sessionID: string, model: { providerID: string; modelID: string }, options?: RequestOptions) =>
+    request("POST", `/api/session/${encodeURIComponent(sessionID)}/model`,
+      { model: { providerID: model.providerID, id: model.modelID } }, options?.signal);
+
+  // 2.x mutations answer 204 or a non-session payload; v1 callers expect the session.
+  const thenSession = async (result: TransportResult, sessionID: string, options?: RequestOptions) =>
+    result.response.ok ? getSession({ sessionID }, options) : failedResult<Session>(result);
 
   const createSession = async (
     parameters: SessionCreateParameters = {},
@@ -1540,21 +1578,28 @@ export function createClientV2(
       parameters: SessionParameters & { limit?: number; before?: string },
       options?: RequestOptions,
     ): Promise<FieldsResult<V2MappedMessage[]>> => {
-      const query = new URLSearchParams();
-      if (parameters.limit !== undefined) query.set("limit", String(parameters.limit));
-      const suffix = query.size ? `?${query.toString()}` : "";
-      const result = await request(
-        "GET",
-        `/api/session/${encodeURIComponent(parameters.sessionID)}/message${suffix}`,
-        undefined,
-        options?.signal,
-      );
-      if (!result.response.ok) return failedResult(result);
-      const data = responseItems(result.payload).flatMap((item) => {
-        const mapped = mapV2Message(item, parameters.sessionID);
-        return mapped ? [mapped] : [];
-      });
-      return successfulResult(result, data);
+      // 2.x pages newest first with a default page size; v1 callers expect
+      // the latest `limit` (or all) messages oldest first.
+      const path = `/api/session/${encodeURIComponent(parameters.sessionID)}/message`;
+      // The limit counts visible messages, not hidden turn markers.
+      const limit = parameters.limit ?? Infinity;
+      const data: V2MappedMessage[] = [];
+      let cursor: string | undefined;
+      let result: TransportResult;
+      for (;;) {
+        const pageSize = Math.min(200, limit - data.length);
+        const query = new URLSearchParams({ limit: String(pageSize), ...(cursor ? { cursor } : { order: "desc" }) });
+        result = await request("GET", `${path}?${query.toString()}`, undefined, options?.signal);
+        if (!result.response.ok) return failedResult(result);
+        const page = responseItems(result.payload);
+        for (const item of page) {
+          const mapped = mapV2Message(item, parameters.sessionID);
+          if (mapped && data.length < limit) data.push(mapped);
+        }
+        cursor = readString(readRecord(result.payload, "cursor"), "next");
+        if (page.length < pageSize || data.length >= limit || !cursor) break;
+      }
+      return successfulResult(result, data.reverse());
     },
     todo: async (parameters: SessionParameters): Promise<FieldsResult<never[]>> =>
       localResult(baseUrl, `/api/session/${encodeURIComponent(parameters.sessionID)}/todo`, []),
@@ -1583,16 +1628,11 @@ export function createClientV2(
           response: new Response(null, { status: 400 }),
         };
       }
-      const modelResult = await request(
-        "POST",
-        `/api/session/${encodeURIComponent(parameters.sessionID)}/model`,
-        { model: { providerID: parameters.model.providerID, id: parameters.model.modelID } },
-        options?.signal,
-      );
+      const modelResult = await selectModel(parameters.sessionID, parameters.model, options);
       if (!modelResult.response.ok) return failedResult(modelResult);
       if (parameters.system !== undefined) {
         const instructions = await request("PUT",
-          `/api/session/${encodeURIComponent(parameters.sessionID)}/instructions/entries/omnirush-context`,
+          `/api/experimental/session/${encodeURIComponent(parameters.sessionID)}/instructions/entries/omnirush-context`,
           { value: parameters.system }, options?.signal);
         if (!instructions.response.ok) return failedResult(instructions);
       }
@@ -1629,7 +1669,7 @@ export function createClientV2(
       parameters: SessionUpdateParameters,
       options?: RequestOptions,
     ): Promise<FieldsResult<Session>> => {
-      // The native preview exposes archived state but no archive mutation.
+      // 2.x sessions expose time.archived, but PATCH /api/session/{id} cannot set it.
       // Reject the entire update before a rename or read can imply success.
       if (parameters.time?.archived !== undefined) {
         if (options?.throwOnError) throw new Error(V2_SESSION_ARCHIVE_UNAVAILABLE);
@@ -1637,14 +1677,12 @@ export function createClientV2(
       }
       if (!parameters.title) return getSession(parameters, options);
       const result = await request(
-        "POST",
-        `/api/session/${encodeURIComponent(parameters.sessionID)}/rename`,
+        "PATCH",
+        `/api/session/${encodeURIComponent(parameters.sessionID)}`,
         { title: parameters.title },
         options?.signal,
       );
-      if (!result.response.ok) return failedResult(result);
-      const mapped = mapV2Session(result.payload, directory);
-      return mapped ? successfulResult(result, mapped) : getSession(parameters, options);
+      return result.response.ok ? getSession(parameters, options) : failedResult(result);
     },
     delete: async (
       parameters: SessionParameters,
@@ -1658,24 +1696,64 @@ export function createClientV2(
       );
       return result.response.ok ? successfulResult(result, true) : failedResult(result);
     },
-    fork: async (): Promise<FieldsResult<Session>> => unsupportedResult(baseUrl, "session.fork"),
-    revert: async (): Promise<FieldsResult<Session>> => unsupportedResult(baseUrl, "session.revert"),
-    unrevert: async (): Promise<FieldsResult<Session>> => unsupportedResult(baseUrl, "session.unrevert"),
-    summarize: async (): Promise<FieldsResult<boolean>> => unsupportedResult(baseUrl, "session.summarize"),
-    shell: async (): Promise<FieldsResult<Record<string, never>>> => unsupportedResult(baseUrl, "session.shell"),
-    command: async (): Promise<FieldsResult<Record<string, never>>> => unsupportedResult(baseUrl, "session.command"),
+    fork: async (
+      parameters: SessionParameters & { messageID?: string },
+      options?: RequestOptions,
+    ): Promise<FieldsResult<Session>> => {
+      // v1 forks copy the messages before messageID; 2.x calls that boundary `before`.
+      const result = await request("POST", `/api/session/${encodeURIComponent(parameters.sessionID)}/fork`,
+        parameters.messageID ? { before: parameters.messageID } : {}, options?.signal);
+      if (!result.response.ok) return failedResult(result);
+      const forked = mapV2Session(result.payload, directory);
+      return forked ? successfulResult(result, forked) : failedResult({ ...result, payload: { name: "InvalidV2SessionResponse" } });
+    },
+    // Staging restores files and hides the turns; the next prompt commits it
+    // and unrevert drops it, which is the v1 soft-revert contract. An explicit
+    // commit would make the revert permanent at once.
+    revert: async (
+      parameters: SessionParameters & { messageID: string; partID?: string },
+      options?: RequestOptions,
+    ): Promise<FieldsResult<Session>> => thenSession(await request("POST",
+      `/api/session/${encodeURIComponent(parameters.sessionID)}/revert/stage`,
+      { messageID: parameters.messageID }, options?.signal), parameters.sessionID, options),
+    unrevert: async (parameters: SessionParameters, options?: RequestOptions): Promise<FieldsResult<Session>> =>
+      thenSession(await request("DELETE", `/api/session/${encodeURIComponent(parameters.sessionID)}/revert`,
+        undefined, options?.signal), parameters.sessionID, options),
+    summarize: async (parameters: SessionParameters, options?: RequestOptions): Promise<FieldsResult<boolean>> => {
+      const result = await request("POST", `/api/session/${encodeURIComponent(parameters.sessionID)}/compact`, {}, options?.signal);
+      return result.response.ok ? successfulResult(result, true) : failedResult(result);
+    },
+    shell: async (
+      parameters: SessionParameters & { command: string },
+      options?: RequestOptions,
+    ): Promise<FieldsResult<Record<string, never>>> => {
+      const result = await request("POST", `/api/session/${encodeURIComponent(parameters.sessionID)}/shell`,
+        { command: parameters.command }, options?.signal);
+      return result.response.ok ? successfulResult(result, {}) : failedResult(result);
+    },
+    command: async (
+      parameters: SessionParameters & { command: string; arguments?: string; model?: string },
+      options?: RequestOptions,
+    ): Promise<FieldsResult<Record<string, never>>> => {
+      // v1 passes "provider/model"; 2.x commands run on the session model.
+      const slash = parameters.model?.indexOf("/") ?? -1;
+      if (parameters.model && slash > 0) {
+        const modelResult = await selectModel(parameters.sessionID,
+          { providerID: parameters.model.slice(0, slash), modelID: parameters.model.slice(slash + 1) }, options);
+        if (!modelResult.response.ok) return failedResult(modelResult);
+      }
+      const result = await request("POST", `/api/session/${encodeURIComponent(parameters.sessionID)}/command`,
+        { name: parameters.command, text: parameters.arguments ?? "" }, options?.signal);
+      return result.response.ok ? successfulResult(result, {}) : failedResult(result);
+    },
   };
 
   const adapter = {
     global: {
       health: async (options?: RequestOptions): Promise<FieldsResult<{ healthy: boolean; version: string }>> => {
-        const result = await request("GET", "/api/health", undefined, options?.signal);
+        const result = await request("GET", "/api/info", undefined, options?.signal);
         if (!result.response.ok) return failedResult(result);
-        const data = responseData(result.payload);
-        return successfulResult(result, {
-          healthy: isRecord(data) && data.healthy === true,
-          version: readString(data, "version") ?? "v2",
-        });
+        return successfulResult(result, { healthy: true, version: readString(result.payload, "version") ?? "v2" });
       },
     },
     session,

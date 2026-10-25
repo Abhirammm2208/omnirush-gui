@@ -567,12 +567,13 @@ describe("native Stop and follow-up handoff", () => {
         id, title: "Native turn", location: { directory: session.directory }, time: { created: 1, updated: 2 },
         ...(id === childID ? { parentID: rootID } : {}),
       } });
+      // Native history pages are newest first.
       if (action === "message") return Response.json({ data: [
-        { id: "msg_user", type: "user", time: { created: 1 }, content: [] },
         { id: "msg_assistant", type: "assistant", time: { created: 2 }, content: id === rootID ? [{
           type: "tool", id: "call_child", name: "subagent", time: { created: 2, ran: 2 },
           state: { status: "running", input: { agent: "explore" }, metadata: { sessionID: childID } },
         }] : [] },
+        { id: "msg_user", type: "user", time: { created: 1 }, content: [] },
       ] });
       if (action === "interrupt") { events.push(`interrupt:${id}`); return Response.json({ data: { interrupted: true } }); }
       if (action === "model") return Response.json({ data: {} });
