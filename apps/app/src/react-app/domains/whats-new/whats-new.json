@@ -299,7 +299,7 @@
         "In a chat you can now switch to another model from the same provider. Picking a model from another provider offers to start a new chat with it, since a chat keeps one provider."
       ],
       "fixed": [
-        "If sending stalls and the app asks you to check the previous message, Stop now clears it, so you can carry on without restarting the app.",
+        "When sending stalls and the app asks you to check the previous message, Stop now clears it so you can carry on without restarting.",
         "Uploads are more complete: a new chat's automatic title now goes up with the chat.",
         "A message the app refuses before it reaches a model (for example \"start a new chat to use another model\", an update needed, or the daily limit reached) no longer counts against your session."
       ]

@@ -1,3 +1,3 @@
 # whats-new.json is the same file in omnirush-cli (src/whats-new/) and omnirush-gui (apps/app/src/react-app/domains/whats-new/).
 # A change to one must be ported to the other and this list updated in both.
-bb5550e91edcd69a45a63257ba2a003b465371eaefc378bd6797d05651cc2ce1  whats-new.json
+d358a8e4774af245c5b0c32178d6199f8ec027f47381ddb19e4eb286ecfa7732  whats-new.json
