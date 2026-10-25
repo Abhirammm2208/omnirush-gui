@@ -5363,9 +5363,14 @@ export class SessionUploader {
   async startScanned(sessionId: string, capMs: number): Promise<void> {
     const scanned = this.startScans.get(sessionId)?.promise;
     if (!scanned) return;
+    // Fails open: a failed scan resolves too (startSession's finally), and the cap lets the prompt go, logged.
     let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([scanned, new Promise<void>((resolveCap) => { timer = setTimeout(resolveCap, capMs); timer.unref?.(); })]);
+    const outcome = await Promise.race([
+      scanned.then(() => "scanned" as const),
+      new Promise<"cap">((resolveCap) => { timer = setTimeout(() => resolveCap("cap"), capMs); timer.unref?.(); }),
+    ]);
     clearTimeout(timer);
+    if (outcome === "cap") this.log("warn", "OmniRush start scan not done before the first prompt; the prompt goes on", { sessionId, capMs });
   }
 
   /** `turnsBefore`: the turns a reopened chat already had, so capture context numbers its turns on from them. */

@@ -67,7 +67,7 @@ function turnDiffEvents(uploads: Envelope[]): TurnDiffEvent[] {
  * sees each one first and may keep the upload (and the session's queue
  * behind it) waiting.
  */
-function recordingUploader(options: { stateDir?: string; snapshotMaxBytes?: number; hold?: (envelope: Envelope) => Promise<void> } = {}): { sessionUploader: SessionUploader; uploads: Envelope[] } {
+function recordingUploader(options: { stateDir?: string; snapshotMaxBytes?: number; hold?: (envelope: Envelope) => Promise<void>; log?: (level: "info" | "warn", message: string) => void } = {}): { sessionUploader: SessionUploader; uploads: Envelope[] } {
   const { hold, ...rest } = options;
   const uploads: Envelope[] = [];
   const sessionUploader = new SessionUploader({
@@ -421,6 +421,30 @@ describe("turn.diff events", () => {
     // Without the wait the start scan reads the turn's write: nothing to diff it against.
     expect(await run(false)).toEqual([["raced.txt", "no_base"]]);
   });
+
+  test("startScanned fails open: the cap lets the prompt go (logged), and a failed scan resolves it", async () => {
+    const logs: string[] = [];
+    const log = (level: "info" | "warn", message: string) => { logs.push(`${level} ${message}`); };
+    const root = await tempDir("omnirush-turn-diff-open-");
+    await writeFile(join(root, "a.txt"), "a\n");
+    const capped = recordingUploader({ log }).sessionUploader;
+    capped.startSession("session-turn-diff-capped", "workspace-turn-diff", root);
+    const started = Date.now();
+    await capped.startScanned("session-turn-diff-capped", 0);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(logs.some((line) => line.startsWith("warn OmniRush start scan not done"))).toBe(true);
+    await capped.idle("session-turn-diff-capped");
+    await capped.stop();
+    // A folder that is gone: the scan fails, the wait ends with it (long before its cap), and the prompt goes on.
+    logs.length = 0;
+    const failing = recordingUploader({ log }).sessionUploader;
+    failing.startSession("session-turn-diff-gone", "workspace-turn-diff", join(root, "missing"));
+    const failedAt = Date.now();
+    await failing.startScanned("session-turn-diff-gone", 20_000);
+    expect(Date.now() - failedAt).toBeLessThan(10_000);
+    expect(logs.some((line) => line.startsWith("warn OmniRush start scan not done"))).toBe(false);
+    await failing.stop();
+  }, 30_000);
 
   test("startScanned resolves at once for a session with no start scan in progress", async () => {
     const { sessionUploader } = recordingUploader();
