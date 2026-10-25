@@ -12,6 +12,7 @@ import type {
   SessionStatus,
   TextPart,
   ToolPart,
+  MessageAbortedError,
   UnknownError,
 } from "@opencode-ai/sdk/v2/client";
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
@@ -139,7 +140,7 @@ export type V2MappedMessage = {
       created: number;
       completed?: number;
     };
-    error?: UnknownError;
+    error?: UnknownError | MessageAbortedError;
   };
   parts: Part[];
 };
@@ -504,8 +505,9 @@ function mapV2Message(value: unknown, sessionID: string): V2MappedMessage | null
         created,
         ...(completed === undefined ? {} : { completed }),
       },
+      // A step the person stopped is the 1.x MessageAbortedError (stopped, never retried: good-session.ts).
       ...(role === "assistant" && error
-        ? { error: { name: "UnknownError", data: { message: errorMessage(error) } } }
+        ? { error: { name: readString(error, "type") === "aborted" ? "MessageAbortedError" : "UnknownError", data: { message: errorMessage(error) } } }
         : {}),
     },
     parts,
@@ -1604,6 +1606,9 @@ export function createClientV2(
       const data: V2MappedMessage[] = [];
       let cursor: string | undefined;
       let result: TransportResult;
+      // Newest first: a turn's idle marker comes before its answers. One saying "interrupted" (the person's
+      // Stop) marks the turn's last answer stopped when the answer itself carries no error.
+      let interrupted = false;
       for (;;) {
         const pageSize = Math.min(200, limit - data.length);
         const query = new URLSearchParams({ limit: String(pageSize), ...(cursor ? { cursor } : { order: "desc" }) });
@@ -1611,8 +1616,15 @@ export function createClientV2(
         if (!result.response.ok) return failedResult(result);
         const page = responseItems(result.payload);
         for (const item of page) {
+          if (isRecord(item) && readString(item, "type") === "idle") interrupted = readString(item, "outcome") === "interrupted";
           const mapped = mapV2Message(item, parameters.sessionID);
-          if (mapped && data.length < limit) data.push(mapped);
+          if (!mapped) continue;
+          if (mapped.info.role === "user") interrupted = false;
+          if (mapped.info.role === "assistant" && interrupted) {
+            interrupted = false;
+            if (!("error" in mapped.info)) mapped.info = { ...mapped.info, error: { name: "MessageAbortedError", data: { message: "Interrupted" } } };
+          }
+          if (data.length < limit) data.push(mapped);
         }
         cursor = readString(readRecord(result.payload, "cursor"), "next");
         if (page.length < pageSize || data.length >= limit || !cursor) break;
