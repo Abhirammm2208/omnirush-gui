@@ -4,7 +4,6 @@ import {
   createClientV2,
   createV2EventTranslationState,
   translateV2Event,
-  V2_SESSION_ARCHIVE_UNAVAILABLE,
 } from "../src/app/lib/opencode-v2-adapter";
 import { parseDynamicToolUIPart } from "../src/react-app/domains/session/sync/parse-tool-parts";
 import { codeModeToolCalls } from "../src/lib/code-mode-tools";
@@ -661,27 +660,19 @@ describe("OpenCode v2 event translation", () => {
 });
 
 describe("OpenCode v2 client compatibility", () => {
-  test.each([0, 1_788_548_737_221])("rejects archived=%i without reading, renaming, or deleting the session", async (archived) => {
+  test.each([0, 1_788_548_737_221])("archives (archived=%i) through the server's own flag on the session PATCH", async (archived) => {
     const originalFetch = globalThis.fetch;
-    const requests: Request[] = [];
+    const sent: Array<{ method: string; path: string; body: unknown }> = [];
     globalThis.fetch = async (input, init) => {
-      requests.push(input instanceof Request ? input : new Request(input, init));
-      return jsonResponse({ data: { id: "ses_archive", title: "Keep this session", time: { created: 1 } } });
+      const request = input instanceof Request ? input : new Request(input, init);
+      sent.push({ method: request.method, path: new URL(request.url).pathname, body: request.method === "PATCH" ? await request.json() : null });
+      return jsonResponse({ data: { id: "ses_archive", title: "Keep", time: { created: 1, ...(archived ? { archived } : {}) } } });
     };
     try {
       const client = createClientV2("http://opencode.test/opencode2", "/workspace", {});
-      for (const title of [undefined, "Do not partially rename"]) {
-        const parameters = { sessionID: "ses_archive", title, time: { archived } };
-        const result = await client.session.update(parameters);
-        expect(result.response.status).toBe(501);
-        expect(result.data).toBeUndefined();
-        expect(result.error).toMatchObject({
-          name: "UnsupportedInV2Preview", operation: "session.archive",
-          message: V2_SESSION_ARCHIVE_UNAVAILABLE,
-        });
-        await expect(client.session.update(parameters, { throwOnError: true })).rejects.toThrow("Archiving and unarchiving are not available");
-      }
-      expect(requests).toEqual([]);
+      const result = await client.session.update({ sessionID: "ses_archive", title: "Renamed", time: { archived } });
+      expect(result.data?.time.archived).toBe(archived || undefined);
+      expect(sent[0]).toEqual({ method: "PATCH", path: "/opencode2/api/session/ses_archive", body: { title: "Renamed", archived: archived || null } });
     } finally {
       globalThis.fetch = originalFetch;
     }

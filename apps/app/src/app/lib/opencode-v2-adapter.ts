@@ -68,7 +68,6 @@ type SessionUpdateParameters = SessionParameters & {
   time?: { archived?: number };
 };
 
-export const V2_SESSION_ARCHIVE_UNAVAILABLE = "Archiving and unarchiving are not available in the OmniRush v2 preview.";
 
 type PermissionReply = "once" | "always" | "reject";
 
@@ -1696,17 +1695,14 @@ export function createClientV2(
       parameters: SessionUpdateParameters,
       options?: RequestOptions,
     ): Promise<FieldsResult<Session>> => {
-      // 2.x sessions expose time.archived, but PATCH /api/session/{id} cannot set it.
-      // Reject the entire update before a rename or read can imply success.
-      if (parameters.time?.archived !== undefined) {
-        if (options?.throwOnError) throw new Error(V2_SESSION_ARCHIVE_UNAVAILABLE);
-        return unsupportedResult(baseUrl, "session.archive", V2_SESSION_ARCHIVE_UNAVAILABLE);
-      }
-      if (!parameters.title) return getSession(parameters, options);
+      // Archiving is the app's own flag (the server keeps it; it never reaches the engine): `archived` on the
+      // same PATCH, a time to archive, 0 or null to unarchive.
+      const archived = parameters.time?.archived;
+      if (!parameters.title && archived === undefined) return getSession(parameters, options);
       const result = await request(
         "PATCH",
         `/api/session/${encodeURIComponent(parameters.sessionID)}`,
-        { title: parameters.title },
+        { ...(parameters.title ? { title: parameters.title } : {}), ...(archived === undefined ? {} : { archived: archived || null }) },
         options?.signal,
       );
       return result.response.ok ? getSession(parameters, options) : failedResult(result);

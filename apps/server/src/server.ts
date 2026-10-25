@@ -235,6 +235,7 @@ import { createEngineV2Preview, resolveInitialEngineV2PreviewState, type EngineV
 import { MIGRATED_FROM } from "./engine-v2-migration.js";
 import { createV2BudgetWrap } from "./engine-v2-budget-wrap.js";
 import { convertOfficeAttachments } from "./engine-v2-attachments.js";
+import { readArchivedChats, setArchived, withArchived } from "./archived-chats.js";
 import { createEditorLsp, LSP_OPS, type LspOp, type LspPayload } from "./editor-lsp.js";
 import { APP_SECRET_HEADER, appRequestRefusal } from "./app-request-gate.js";
 import { isUploadFileDenied, sessionUploaderEnabled } from "./session-uploader.js";
@@ -2229,6 +2230,27 @@ export async function proxyOpencodeV2Request(input: {
     headers.delete("content-length");
     headers.set("content-type", "application/json");
   }
+  // Archiving (archived-chats.ts): the app's own flag, taken off the PATCH before the engine sees it.
+  if (method === "PATCH" && sessionId && /^\/api\/session\/[^/]+$/.test(routePath) && requestBody) {
+    let patch: unknown = null;
+    try { patch = JSON.parse(new TextDecoder().decode(requestBody)); } catch { patch = null; }
+    if (isRecord(patch) && Object.hasOwn(patch, "archived")) {
+      const at = typeof patch.archived === "number" && patch.archived > 0 ? patch.archived : null;
+      setArchived(runtimeStorageDir(input.config), sessionId, at);
+      const { archived: _archived, ...rest } = patch;
+      if (Object.keys(rest).length === 0) {
+        const read = new URL(target);
+        const answer = await loopbackFetch(read.toString(), { headers: new Headers({ authorization: headers.get("authorization") ?? "" }), signal: AbortSignal.timeout(10_000) });
+        if (!answer.ok) return sanitizeProxyResponse(answer);
+        const payload: unknown = await answer.json();
+        const data = isRecord(payload) && "data" in payload ? payload.data : payload;
+        return jsonResponse({ data: withArchived(runtimeStorageDir(input.config), data) });
+      }
+      body = JSON.stringify(rest);
+      headers.delete("content-length");
+      headers.set("content-type", "application/json");
+    }
+  }
   if (method === "POST" && /^\/api\/session\/[^/]+\/prompt$/.test(routePath) && requestBody) {
     // Office files the engine would drop go in as their text (engine-v2-attachments.ts).
     let promptInput: unknown = null;
@@ -2400,13 +2422,17 @@ export async function proxyOpencodeV2Request(input: {
     const items = Array.isArray(data) ? data : isRecord(data) && Array.isArray(data.items) ? data.items : null;
     if (!items) throw new ApiError(502, "invalid_engine_response", "Invalid session list response");
     const expected = await realpath(input.workspace.path).catch(() => input.workspace.path);
+    const flags = readArchivedChats(runtimeStorageDir(input.config));
     const scoped = (await Promise.all(items.map(async (item: unknown) => {
       const session = isRecord(item) && isRecord(item.info) ? item.info : item;
       const location = isRecord(session) && isRecord(session.location) ? session.location : null;
       const directory = location && typeof location.directory === "string" ? location.directory : null;
       if (!directory) return null;
       const actual = await realpath(directory).catch(() => directory);
-      return actual === expected ? item : null;
+      if (actual !== expected) return null;
+      return isRecord(item) && isRecord(item.info)
+        ? { ...item, info: withArchived(runtimeStorageDir(input.config), item.info, flags) }
+        : withArchived(runtimeStorageDir(input.config), item, flags);
     }))).filter((item) => item !== null);
     const scopedData = isRecord(data) ? { ...data, items: scoped } : scoped;
     const scopedPayload = isRecord(payload) && "data" in payload ? { ...payload, data: scopedData } : scopedData;
@@ -2414,6 +2440,12 @@ export async function proxyOpencodeV2Request(input: {
     responseHeaders.delete("content-length");
     responseHeaders.delete("content-encoding");
     return sanitizeProxyResponse(new Response(JSON.stringify(scopedPayload), { status: response.status, headers: responseHeaders }));
+  }
+  if (method === "GET" && /^\/api\/session\/[^/]+$/.test(routePath) && response.ok) {
+    const payload: unknown = await response.json();
+    const data = isRecord(payload) && "data" in payload ? payload.data : payload;
+    const shaped = isRecord(data) && isRecord(data.info) ? { ...data, info: withArchived(runtimeStorageDir(input.config), data.info) } : withArchived(runtimeStorageDir(input.config), data);
+    return jsonResponse(isRecord(payload) && "data" in payload ? { ...payload, data: shaped } : shaped, response.status);
   }
   return sanitizeProxyResponse(response);
 }
