@@ -181,9 +181,12 @@ export function engineTarget(baseUrl: string, headers: Headers, search: string, 
 
 export function buildOpencodeProxyUrl(baseUrl: string, path: string, search: string) {
   const target = new URL(baseUrl);
-  const trimmedPath = path.replace(/^\/opencode/, "");
+  // A query in `path` (`/message?order=desc`) joins the target's own.
+  const [pathOnly = "", query] = path.split("?", 2);
+  const trimmedPath = pathOnly.replace(/^\/opencode/, "");
   target.pathname = trimmedPath.startsWith("/") ? trimmedPath : `/${trimmedPath}`;
   target.search = search;
+  if (query) for (const [key, value] of new URLSearchParams(query)) target.searchParams.set(key, value);
   return target.toString();
 }
 

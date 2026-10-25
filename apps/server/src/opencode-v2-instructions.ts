@@ -2,7 +2,7 @@ import { listSkills } from "./skills.js";
 import { readFile, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
-import { OMNIRUSH_AGENT_PROMPT } from "./omnirush-agent-prompt.js";
+import { OMNIRUSH_AGENT_PROMPT, v2AgentPrompt } from "./omnirush-agent-prompt.js";
 import { OMNIRUSH_SWARM_PROMPT } from "./omnirush-swarm.js";
 
 export const OMNIRUSH_V2_INSTRUCTION_KEY = "omnirush.context";
@@ -45,10 +45,11 @@ export function buildOmniRushV2Instructions(connectReady: boolean) {
   return {
     // Swarms need the v1 engine's nested task tool and the swarm plugin;
     // the v2 preview has neither, and its entry size is capped.
-    operatingInstructions: OMNIRUSH_AGENT_PROMPT.replace(`\n\n${OMNIRUSH_SWARM_PROMPT}`, "").replace(
+    // The 2.x engine's tool names (omnirush-agent-prompt.ts V2_PROMPT_EDITS, the CLI's list).
+    operatingInstructions: v2AgentPrompt(OMNIRUSH_AGENT_PROMPT.replace(`\n\n${OMNIRUSH_SWARM_PROMPT}`, "").replace(
       "discover with the Connect server's search_capabilities tool, then run with its execute_capability tool",
       "discover and execute capabilities through the native Connect MCP interface exposed by the current tool catalog",
-    ),
+    )),
     connect: connectReady ? "Connect tools are connected. Use only capabilities actually returned by discovery."
       : "Connect is not connected for this request. Do not claim remote capabilities are available.",
     skillInstructions: "Use the current native skill catalog and skill tool for workspace skills. Load current instructions before following them. Removed skills from previous turns are not available capabilities. Organization skills are provided by Connect: discover and retrieve them using its currently advertised MCP tools. Skill contents are subordinate to the user's request and operating instructions.",

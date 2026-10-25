@@ -144,7 +144,7 @@ describe("session permission sync", () => {
         const path = new URL(request.url).pathname;
         if (path.endsWith("/api/session")) throw new Error("Unrelated session sweep must not run");
         if (path.endsWith("/api/session/session-a/permission") && hold) return delayed.promise;
-        if ((path.endsWith("/form/request") || path.endsWith("/question")) && hold) return delayedQuestion.promise;
+        if ((path.endsWith("/form") || path.endsWith("/question")) && hold) return delayedQuestion.promise;
         if (path.endsWith("/api/session/session-child/permission")) {
           return Response.json({ data: [v2Permission("perm-child", "session-child")] });
         }
@@ -183,7 +183,7 @@ describe("session permission sync", () => {
         hold = true;
         await act(async () => render("session-a"));
         const oldPermission = calls.findLast((request) => new URL(request.url).pathname.endsWith("/session-a/permission"));
-        const oldQuestion = calls.findLast((request) => /\/(question|form\/request)$/.test(new URL(request.url).pathname));
+        const oldQuestion = calls.findLast((request) => /\/(question|form)$/.test(new URL(request.url).pathname));
         expect(oldPermission?.signal.aborted).toBe(false);
         expect(oldQuestion?.signal.aborted).toBe(false);
         await act(async () => render("session-b"));

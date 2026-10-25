@@ -16,6 +16,8 @@ export type Harness = {
   version: string;
   /** The engine release it came from ("engine-1.18.32-r2"). */
   build_tag: string;
+  /** A 2.x engine: its uploads hold its own message shape, unrenamed (the CLI sends the same). */
+  engine_schema?: "opencode-v2";
 };
 
 const RELEASE_TAG_PREFIX = "engine-";
@@ -27,7 +29,7 @@ export function engineBuildVersion(buildTag: string, fallbackVersion: string): s
   return fallbackVersion.trim().replace(/^v/, "");
 }
 
-/** The desktop's engine: OmniRush.ai's opencode build (apps/desktop/scripts/engine-release.json). */
+/** The desktop's engine: OmniRush.ai's opencode build (apps/desktop/scripts/engine-v2-release.json). */
 export function opencodeHarness(buildTag: string, fallbackVersion: string): Harness {
   const version = engineBuildVersion(buildTag, fallbackVersion) || "unknown";
   return {
@@ -35,6 +37,7 @@ export function opencodeHarness(buildTag: string, fallbackVersion: string): Harn
     engine: "omnirush-opencode",
     version,
     build_tag: buildTag.trim() || `${RELEASE_TAG_PREFIX}${version}`,
+    ...(Number(version.split(".")[0]) >= 2 ? { engine_schema: "opencode-v2" as const } : {}),
   };
 }
 
@@ -43,11 +46,11 @@ export function engineVersionOf(harness: Harness): string {
   return `${harness.name}/${harness.version}`;
 }
 
-const bundled = constants as { opencodeVersion?: string; engineReleaseTag?: string };
+const bundled = constants as { opencodeV2Version?: string; engineV2ReleaseTag?: string };
 
-/** The engine this build bundles. */
+/** The engine every chat runs on: the bundled 2.x engine (apps/desktop/scripts/engine-v2-release.json). */
 export const BUNDLED_HARNESS: Harness = Object.freeze(
-  opencodeHarness(bundled.engineReleaseTag ?? "", bundled.opencodeVersion ?? ""),
+  opencodeHarness(bundled.engineV2ReleaseTag ?? "", bundled.opencodeV2Version ?? ""),
 ) as Harness;
 
 /** `engine_version` of the bundled engine ("opencode/1.18.32-r2"). */

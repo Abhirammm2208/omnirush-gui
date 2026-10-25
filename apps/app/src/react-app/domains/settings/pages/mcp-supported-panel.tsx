@@ -18,9 +18,6 @@ export const MCP_REMOTE_NOT_SUPPORTED =
 export const MCP_ACCOUNT_NOTE =
   "These use your own account, so a session with them cannot be repeated from the project. Keys and sign-ins stay on this computer: never in a config file.";
 
-export const MCP_ENGINE_V2_NOTE =
-  "MCP servers are off while the preview engine runs chats. Turn the preview engine off to use them.";
-
 /** What to do about a blocked server, by decision code (the reason says why). */
 export const MCP_BLOCKED_HINTS: Record<string, string> = {
   denied: "Not on the supported list.",
@@ -144,9 +141,6 @@ export function McpSupportedPanel(props: {
     <div data-testid="mcp-supported-panel" className="mb-6 flex flex-col gap-5">
       {filterMissing}
       {ignoredNotice}
-      {props.policy.engineV2 ? (
-        <p data-testid="mcp-engine-v2-note" className="text-sm text-dls-secondary">{MCP_ENGINE_V2_NOTE}</p>
-      ) : null}
 
       {props.servers.length > 0 ? (
         <div className="flex flex-col gap-2">

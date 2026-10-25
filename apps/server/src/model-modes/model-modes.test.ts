@@ -104,6 +104,17 @@ describe("model modes", () => {
     expect(((await response.json()) as { error: { message: string } }).error.message).toBe("This model isn't available in sandbox projects.");
   });
 
+  test("broker: the 2.x engine's stock x-session-id names the chat when nothing else does", async () => {
+    const calls: Call[] = [];
+    const b = broker(calls, undefined, false);
+    const tools = [{ type: "function", name: "shell" }];
+    expect((await b.handle(request({ model: "kimi-k3.1-pro", tools }, { "x-session-id": "ses_stock" }), "responses")).status).toBe(200);
+    const refused = await b.handle(request({ model: "gpt-6-astra", tools }, { "x-session-id": "ses_stock" }), "responses");
+    expect(refused.status).toBe(400);
+    // An explicit chat header wins over the stock one.
+    expect((await b.handle(request({ model: "gpt-6-astra", tools }, { "x-session-id": "ses_stock", "x-omnirush-session-id": "ses_other" }), "responses")).status).toBe(200);
+  });
+
   test("broker: all context-bearing requests and children inherit the chat model", async () => {
     const calls: Call[] = [];
     const b = broker(calls, undefined, false);

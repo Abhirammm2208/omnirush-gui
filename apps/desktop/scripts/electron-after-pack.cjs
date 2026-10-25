@@ -8,7 +8,7 @@ const { signLimactl } = require("./sign-lima.cjs");
 const computerUseHelperAppName = "OmniRush.ai Computer Use.app";
 
 const sidecarBases = [
-  "opencode",
+  "opencode2",
 ];
 
 function targetTriple(platformName, arch) {

@@ -41,12 +41,12 @@ try {
   const targetTriple = process.arch === "arm64"
     ? "aarch64-unknown-linux-gnu"
     : "x86_64-unknown-linux-gnu";
-  const sidecar = join(resources, `sidecars/opencode-${targetTriple}`);
-  accessSync(sidecar, constants.X_OK);
-  if (existsSync(join(resources, "sidecars/opencode"))) {
-    throw new Error("Packaged sidecar unexpectedly contains the generic opencode alias");
+  for (const name of ["opencode", "opencode2", `opencode-${targetTriple}`]) {
+    if (existsSync(join(resources, "sidecars", name))) throw new Error(`Packaged sidecars unexpectedly contain ${name} (only opencode2-<triple> ships)`);
   }
-  run("sidecar", sidecar, ["--version"], 10_000, {}, output);
+  const sidecarV2 = join(resources, `sidecars/opencode2-${targetTriple}`);
+  accessSync(sidecarV2, constants.X_OK);
+  run("sidecar-v2", sidecarV2, ["--version"], 10_000, {}, output);
   const embedded = pathToFileURL(join(archive, "server/dist/embedded.js")).href;
   run("server-import", binary, ["--input-type=module", "-e",
     `const server = await import(${JSON.stringify(embedded)}); if (typeof server.startEmbeddedServer !== "function") throw new Error("Missing embedded server export");`],

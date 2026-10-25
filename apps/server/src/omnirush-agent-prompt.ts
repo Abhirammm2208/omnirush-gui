@@ -103,3 +103,26 @@ Lead with the outcome. Summarize what you changed (with file paths), what you ra
 ## Connected work
 
 Org-connected services, remote skills, Workflows, and Automations reach you through Connect: discover with the Connect server's search_capabilities tool, then run with its execute_capability tool using an exact returned name. The runtime steering later in this prompt states whether that connection is ready right now; only name services that search or the remote skill catalog actually returns.`;
+
+/**
+ * The agent prompt on the OpenCode 2 engine (opencode-v2-instructions.ts): the same text with the 2.x tool names
+ * (patch, shell, subagent; no todo list there), and the web-off note naming the 2.x websearch tool. Each pair is
+ * [1.x text, 2.x text], the CLI's list (src/agent-prompt.js) unchanged; a pair whose 1.x text is missing fails the
+ * test that pins them (engine-v2-next.test.ts). The desktop's prompt has no web-off note, so that pair finds nothing.
+ */
+export const V2_PROMPT_EDITS = Object.freeze([
+  ["append the rest in a few smaller apply_patch (or edit) calls", "append the rest in a few smaller patch (or edit) calls"],
+  ["- Use the todo list only for work with three or more distinct steps, and keep it current; skip it for a single fix or a small change.\n", ""],
+  ["make exactly that many task-tool calls", "make exactly that many subagent-tool calls"],
+  ["while the task tool is present", "while the subagent tool is present"],
+  ["- When apply_patch or edit reports that expected lines were not found", "- When patch or edit reports that expected lines were not found"],
+  ["Use git and gh from the bash tool;", "Use git and gh from the shell tool;"],
+  ["There is no web search tool here: do not call web_search or any other search tool that is not in your tool list.", "Web search is not available here: do not use the websearch tool or any other search tool."],
+] as const);
+
+/** The agent prompt text for the 2.x engine (V2_PROMPT_EDITS applied). */
+export function v2AgentPrompt(text: string): string {
+  let out = String(text);
+  for (const [from, to] of V2_PROMPT_EDITS) out = out.split(from).join(to);
+  return out;
+}

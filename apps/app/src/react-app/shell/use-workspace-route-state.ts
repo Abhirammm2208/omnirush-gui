@@ -22,7 +22,7 @@ import {
   type OmniRushServerInfo,
   type WorkspaceList,
 } from "@/app/lib/desktop";
-import { createClient, unwrap } from "@/app/lib/opencode";
+import { unwrap } from "@/app/lib/opencode";
 import { createClientV2 } from "@/app/lib/opencode-v2-adapter";
 import { getNativeSession, isMissingSessionError } from "@/app/lib/opencode-session-native";
 import { createOmniRushServerClient, OmniRushServerError, type OmniRushServerClient } from "@/app/lib/omnirush-server";
@@ -1415,16 +1415,11 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
   const opencodeClient = useMemo(
     () =>
       engineRoutingReady && opencodeBaseUrl && selectedWorkspaceServerToken && !selectedWorkspaceError
-        ? engineV2ChatRouting
-          ? createClientV2(opencodeBaseUrl, selectedWorkspaceRoot || undefined, {
-              token: selectedWorkspaceServerToken,
-            })
-          : createClient(opencodeBaseUrl, selectedWorkspaceRoot || undefined, {
-              token: selectedWorkspaceServerToken,
-              mode: "omnirush",
-            })
+        ? createClientV2(opencodeBaseUrl, selectedWorkspaceRoot || undefined, {
+            token: selectedWorkspaceServerToken,
+          })
         : null,
-    [engineRoutingReady, engineV2ChatRouting, opencodeBaseUrl, selectedWorkspaceError, selectedWorkspaceRoot, selectedWorkspaceServerToken],
+    [engineRoutingReady, opencodeBaseUrl, selectedWorkspaceError, selectedWorkspaceRoot, selectedWorkspaceServerToken],
   );
   useEffect(() => {
     if (!developerMode || !opencodeClient) return;

@@ -49,7 +49,7 @@ import { LatestTrailingWorkQueue } from "./latest-trailing-work-queue.js";
 import { buildEngineAuthProbeHeader } from "./engine-registry.js";
 import { addPlugin, listPlugins, normalizePluginSpec, removePlugin } from "./plugins.js";
 import { sanitizePortableOpencodeConfig } from "./portable-opencode.js";
-import { addMcp, assertNoConfiguredMcp, listMcp, removeMcp, setMcpEnabled } from "./mcp.js";
+import { addMcp, listMcp, removeMcp, setMcpEnabled } from "./mcp.js";
 import { buildOmniRushV2Instructions, waitForOmniRushV2Skills, OMNIRUSH_V2_INSTRUCTION_KEY } from "./opencode-v2-instructions.js";
 import {
   callMcpAppTool,
@@ -232,7 +232,12 @@ import { modelsNamedIn } from "./omnirush-swarm.js";
 import { findManagedEngineWorkspace } from "./workspaces.js";
 import { startThreadApprovalReplayer, type ThreadApprovalReplayer } from "./thread-approvals.js";
 import { CloudProviderSync, parseCloudProviderDenSession } from "./cloud-provider-sync.js";
-import { createEngineV2Preview, type EngineV2Preview } from "./engine-v2-preview.js";
+import { createEngineV2Preview, resolveInitialEngineV2PreviewState, type EngineV2Preview } from "./engine-v2-preview.js";
+import { MIGRATED_FROM } from "./engine-v2-migration.js";
+import { createV2BudgetWrap } from "./engine-v2-budget-wrap.js";
+import { convertOfficeAttachments } from "./engine-v2-attachments.js";
+import { readArchivedChats, setArchived, withArchived } from "./archived-chats.js";
+import { createEditorLsp, LSP_OPS, type LspOp, type LspPayload } from "./editor-lsp.js";
 import { APP_SECRET_HEADER, appRequestRefusal } from "./app-request-gate.js";
 import { isUploadFileDenied, sessionUploaderEnabled } from "./session-uploader.js";
 import { editorUserEditEvent, editorUserReviewEvent } from "./editor-events.js";
@@ -301,6 +306,16 @@ async function capturePermissionMode(config: ServerConfig): Promise<ApprovalMode
 
 /** Automatic compaction (session-archive/auto-compact.ts), one per server: its counts live as long as the app. */
 const autoCompactorsByServer = new WeakMap<ServerConfig, AutoCompactor>();
+const engineV2ByServer = new WeakMap<ServerConfig, EngineV2Preview>();
+const editorLspByServer = new WeakMap<ServerConfig, ReturnType<typeof createEditorLsp>>();
+function editorLspFor(config: ServerConfig): ReturnType<typeof createEditorLsp> {
+  let host = editorLspByServer.get(config);
+  if (!host) {
+    host = createEditorLsp({ toolsDir: join(runtimeStorageDir(config), "language-servers") });
+    editorLspByServer.set(config, host);
+  }
+  return host;
+}
 /**
  * How long a prompt waits for its chat's automatic compaction: the window
  * aborts a prompt request after 30 s, and the prompt's own capture steps
@@ -992,6 +1007,11 @@ function isPromptAsyncProxyRequest(method: string, proxyPath: string) {
 // A prompt dispatch (v1 prompt_async, the v1 engine's synchronous prompt
 // `POST /session/:id/message`, v2 prompt, or a slash command) is the session
 // uploader's "prompt" milestone: the workspace is captured as the turn begins.
+/** A new chat or a turn on the 1.x engine (retired for chats: the 2.x engine runs them). */
+export function startsV1Chat(method: string, proxyPath: string): boolean {
+  return method === "POST" && /^\/session(?:\/[^/]+\/(?:prompt_async|prompt|message|command|shell|summarize|init|fork))?\/?$/.test(normalizeOpencodeProxyPath(proxyPath));
+}
+
 function isUploadPromptDispatch(method: string, proxyPath: string): boolean {
   return method === "POST" && /^\/session\/[^/]+\/(?:prompt_async|prompt|message|command)$/.test(normalizeOpencodeProxyPath(proxyPath));
 }
@@ -1110,6 +1130,15 @@ type EngineRequestTarget = { baseUrl: string; headers: Headers };
 async function captureEngineTarget(config: ServerConfig, sessionId: string, workspaceId: string): Promise<EngineTarget | null> {
   const workspace = config.workspaces.find((item) => item.id === workspaceId);
   if (!workspace || workspace.workspaceType === "remote") return null;
+  // The 2.x engine (every chat since it shipped), when it has the chat in this workspace's folder.
+  const v2 = engineV2ByServer.get(config)?.connection();
+  if (v2) {
+    const headers = new Headers({ authorization: `Basic ${Buffer.from(`opencode:${v2.password}`).toString("base64")}` });
+    const search = `?${new URLSearchParams({ "location[directory]": workspace.path })}`;
+    const found = await loopbackFetch(buildOpencodeProxyUrl(v2.url, `/api/session/${encodeURIComponent(sessionId)}`, search), { headers, signal: AbortSignal.timeout(ENGINE_SESSION_CHECK_TIMEOUT_MS) })
+      .then(async (response) => { await response.body?.cancel().catch(() => undefined); return response.ok; }).catch(() => false);
+    if (found) return engineTarget(v2.url, headers, search, "v2");
+  }
   const route = enginePoolForConfig(config)?.routeRequest("GET", `/session/${sessionId}/message`) ?? null;
   const connection = route ? null : resolveWorkspaceOpencodeConnection(config, workspace);
   const baseUrl = route?.target.baseUrl ?? connection?.baseUrl?.trim() ?? "";
@@ -1260,7 +1289,11 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
         }
       : undefined
   );
+  // The quota wrap on the 2.x engine (engine-v2-budget-wrap.ts): set once the engine below exists.
+  let budgetWrap: ReturnType<typeof createV2BudgetWrap> | undefined;
   const gatewayBroker = new OmniRushGatewayBroker({
+    onModelResponse: (sessionId, headers) => budgetWrap?.noteResponse(sessionId, headers),
+    contextWrap: (sessionId) => budgetWrap?.contextWrap(sessionId) ?? false,
     sessionModelsFile: join(runtimeStorageDir(config), "chat-models.json"),
     log: (level, message, attributes) => logger.log(level, message, attributes),
     credentials: gatewayCredentials
@@ -1528,6 +1561,34 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     if (config.workspaces.length > 0) cloudProviderSync.markReloadPending();
   };
   const engineV2Preview = createEngineV2Preview({ config, env, deferStart: true });
+  engineV2ByServer.set(config, engineV2Preview);
+  /** A chat on the 2.x engine, read where it lives (its folder), or null. */
+  const v2ChatTarget = async (sessionId: string): Promise<EngineTarget | null> => {
+    const v2 = engineV2Preview.connection();
+    if (!v2) return null;
+    const headers = new Headers({ authorization: `Basic ${Buffer.from(`opencode:${v2.password}`).toString("base64")}` });
+    const found: unknown = await loopbackFetch(buildOpencodeProxyUrl(v2.url, `/api/session/${encodeURIComponent(sessionId)}`, ""), { headers, signal: AbortSignal.timeout(5_000) })
+      .then(async (response) => (response.ok ? response.json() : null)).catch(() => null);
+    const info = isRecord(found) && isRecord(found.data) ? found.data : null;
+    const directory = info && isRecord(info.location) && typeof info.location.directory === "string" ? info.location.directory : null;
+    return directory ? engineTarget(v2.url, headers, `?${new URLSearchParams({ "location[directory]": directory })}`, "v2") : null;
+  };
+  budgetWrap = createV2BudgetWrap({
+    control: async (id, args) => {
+      const result: unknown = await uiControl.request("query", { id, args });
+      if (!isRecord(result) || result.ok !== true || !isRecord(result.result)) return "unavailable";
+      return typeof result.result.choice === "string" ? result.result.choice : "ok";
+    },
+    busy: async (sessionId) => {
+      const target = await v2ChatTarget(sessionId);
+      return target ? desktopAutoCompactEngine(target, sessionId).busy() : null;
+    },
+    compact: async (sessionId) => {
+      const target = await v2ChatTarget(sessionId);
+      if (!target) throw new Error("the chat is not on the engine");
+      await desktopAutoCompactEngine(target, sessionId).summarize({ providerID: "omnirush", modelID: "" }, AbortSignal.timeout(5 * 60_000));
+    },
+  });
   const bestPracticesReloads = new BestPracticesEngineReloads({
     isBusy: (workspace) => engineHasActiveSessions(config, workspace, true),
     reload: (workspace) => reloadOpencodeEngine(config, workspace, engineMcpServerState, { reason: "engine_reload" }),
@@ -1671,8 +1732,9 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
           proxyService = "opencode";
           proxyBaseUrl = connection.url;
           await engineV2Preview.ensureWorkspaceReady(workspace.path);
-          // Reconcile through v2's runtime MCP API before the next call. The
-          // ordinary connection routes remain authoritative; v1 is untouched.
+          // The project's allowed MCP servers reach the engine before the next call (engine-v2-mcp.ts);
+          // a write first refreshes the app-added entries the filter reads.
+          if (request.method !== "GET" && request.method !== "HEAD") await writeWorkspaceMcpFile(config, workspace);
           await engineV2Preview.syncWorkspaceMcp(workspace.id, workspace.path);
           const send = () => proxyOpencodeV2Request({
             config,
@@ -1682,6 +1744,7 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
             proxyPath: mount.restPath,
             connection,
             recoverySignal: taskRecovery?.owns(request) ? request.signal : undefined,
+            migratedFromV1: engineV2Preview.migratedFromV1,
           });
           const response = taskRecovery ? await taskRecovery.forward(workspace, "v2", decodeEngineRoutePath(mount.restPath), request, send) : await send();
           return finalize(response);
@@ -1741,6 +1804,9 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
       if (mount && (mount.restPath === "/opencode" || mount.restPath.startsWith("/opencode/"))) {
         return proxyWorkspaceOpencodeMount(mount);
       }
+      if (mount && (mount.restPath === "/opencode2" || mount.restPath.startsWith("/opencode2/"))) {
+        return proxyWorkspaceOpencodeV2Mount(mount);
+      }
 
       // Allow clients to use a mounted base URL (e.g. http://host:8787/w/<id>) while
       // still calling the existing /workspace/:id/* API surface.
@@ -1757,6 +1823,11 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
           return finalize(jsonResponse({ code: "not_found", message: "Not found" }, 404));
         }
         url.pathname = mount.restPath;
+      }
+
+      // The global 2.x client (web, gateway): the first workspace's engine, as /opencode below.
+      if ((url.pathname === "/opencode2" || url.pathname.startsWith("/opencode2/")) && config.workspaces[0]) {
+        return proxyWorkspaceOpencodeV2Mount({ workspaceId: config.workspaces[0].id, restPath: url.pathname });
       }
 
       if (url.pathname === "/opencode" || url.pathname.startsWith("/opencode/")) {
@@ -1881,6 +1952,7 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     captureServerException(error, { method: "START", route: "startServer" });
     cloudProviderSync.stop();
     await engineV2Preview.stop().catch(() => undefined);
+    editorLspByServer.get(config)?.close();
     engineInstanceReaper.close();
     clearEngineInstanceReaperForConfig(config);
     invalidateEngineMcpServerState(config, engineMcpServerState);
@@ -1984,6 +2056,7 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
       cloudProviderSync.stop();
       modelCatalogSync.stop();
       await engineV2Preview.stop().catch(() => undefined);
+      editorLspByServer.get(config)?.close();
       engineInstanceReaper.close();
       clearEngineInstanceReaperForConfig(config);
       invalidateEngineMcpServerState(config, engineMcpServerState);
@@ -2026,6 +2099,8 @@ export async function proxyOpencodeV2Request(input: {
   proxyPath: string;
   connection: { url: string; username: string; password: string };
   recoverySignal?: AbortSignal;
+  /** Whether a chat came from the 1.x store: its turns are marked and kept out of deliveries. */
+  migratedFromV1?: (sessionId: string) => boolean;
 }): Promise<Response> {
   const method = input.request.method.toUpperCase();
   if (method !== "GET" && method !== "HEAD") ensureWritable(input.config);
@@ -2042,12 +2117,11 @@ export async function proxyOpencodeV2Request(input: {
   try { decodedPath = decodeURIComponent(forwardedPath); } catch { decodedPath = routePath; }
   // Runtime provider configuration contains server-owned credentials. The
   // renderer uses the catalog/status APIs; it must not read or mutate this file.
-  if (/^\/api\/config(?:\/|$)/.test(decodedPath)) {
+  if (/^\/api\/(?:experimental\/)?config(?:\/|$)/.test(decodedPath)) {
     throw new ApiError(403, "engine_config_private", "Engine configuration is private");
   }
-  // The preview engine cannot apply the server's MCP list: MCP stays off
-  // there (its servers are removed before each request; engine-v2-preview.ts).
-  if (/^(?:\/api)?\/mcp(?:\/|$)/.test(decodedPath) && method !== "GET" && method !== "HEAD") {
+  // MCP servers follow the server's list (engine-v2-mcp.ts): the engine's own MCP routes stay closed.
+  if (/^(?:\/api(?:\/experimental)?)?\/mcp(?:\/|$)/.test(decodedPath) && method !== "GET" && method !== "HEAD") {
     throw new ApiError(403, "engine_mcp_managed", "Manage connections through OmniRush.ai");
   }
   const sessionMatch = routePath.match(/^\/api\/session\/([^/]+)(?:\/|$)/);
@@ -2055,10 +2129,6 @@ export async function proxyOpencodeV2Request(input: {
   const promptDispatch = isUploadV2PromptDispatch(method, routePath);
   const collectible = input.workspace.workspaceType !== "remote";
   if (promptDispatch && collectible) {
-    await assertNoConfiguredMcp(
-      input.workspace.path,
-      await readRuntimeOpencodeConfig(input.config, input.workspace.id),
-    );
     if (uploadDispatchRefused(input.config, input.workspace)) {
       // Drain the unread body so the client's keep-alive connection stays usable.
       await input.request.arrayBuffer().catch(() => undefined);
@@ -2145,7 +2215,7 @@ export async function proxyOpencodeV2Request(input: {
     });
     const value = buildOmniRushV2Instructions(false);
     const instructionUrl = new URL(target);
-    instructionUrl.pathname = `/api/session/${encodeURIComponent(sessionId)}/instructions/entries/${OMNIRUSH_V2_INSTRUCTION_KEY}`;
+    instructionUrl.pathname = `/api/experimental/session/${encodeURIComponent(sessionId)}/instructions/entries/${OMNIRUSH_V2_INSTRUCTION_KEY}`;
     const synced = await loopbackFetch(instructionUrl.toString(), {
       method: "PUT", headers: internalHeaders, body: JSON.stringify({ value }), signal: AbortSignal.timeout(15_000),
     });
@@ -2171,6 +2241,40 @@ export async function proxyOpencodeV2Request(input: {
     headers.delete("content-length");
     headers.set("content-type", "application/json");
   }
+  // Archiving (archived-chats.ts): the app's own flag, taken off the PATCH before the engine sees it.
+  if (method === "PATCH" && sessionId && /^\/api\/session\/[^/]+$/.test(routePath) && requestBody) {
+    let patch: unknown = null;
+    try { patch = JSON.parse(new TextDecoder().decode(requestBody)); } catch { patch = null; }
+    if (isRecord(patch) && Object.hasOwn(patch, "archived")) {
+      const at = typeof patch.archived === "number" && patch.archived > 0 ? patch.archived : null;
+      setArchived(runtimeStorageDir(input.config), sessionId, at);
+      const { archived: _archived, ...rest } = patch;
+      if (Object.keys(rest).length === 0) {
+        const read = new URL(target);
+        const answer = await loopbackFetch(read.toString(), { headers: new Headers({ authorization: headers.get("authorization") ?? "" }), signal: AbortSignal.timeout(10_000) });
+        if (!answer.ok) return sanitizeProxyResponse(answer);
+        const payload: unknown = await answer.json();
+        const data = isRecord(payload) && "data" in payload ? payload.data : payload;
+        return jsonResponse({ data: withArchived(runtimeStorageDir(input.config), data) });
+      }
+      body = JSON.stringify(rest);
+      headers.delete("content-length");
+      headers.set("content-type", "application/json");
+    }
+  }
+  if (method === "POST" && /^\/api\/session\/[^/]+\/prompt$/.test(routePath) && requestBody) {
+    // Office files the engine would drop go in as their text (engine-v2-attachments.ts).
+    let promptInput: unknown = null;
+    try { promptInput = JSON.parse(new TextDecoder().decode(requestBody)); } catch { promptInput = null; }
+    if (isRecord(promptInput) && Array.isArray(promptInput.files) && promptInput.files.length > 0) {
+      const converted = await convertOfficeAttachments(promptInput, input.workspace.path).catch(() => promptInput as Record<string, unknown>);
+      if (converted !== promptInput) {
+        body = JSON.stringify(converted);
+        headers.delete("content-length");
+        headers.set("content-type", "application/json");
+      }
+    }
+  }
   // Collection, identical to the v1 mount: the session starts (or resumes) on
   // its first dispatch, the prompt milestone is snapshotted, the request and
   // response are traced and the turn is observed until it settles.
@@ -2180,17 +2284,29 @@ export async function proxyOpencodeV2Request(input: {
     ? sessionId
     : null;
   const engine = capture && uploadedSessionId ? engineTarget(input.connection.url, headers, target.search, "v2") : null;
+  // Automatic compaction (session-archive/auto-compact.ts), as on the 1.x engine (auto-compact-engine.ts: the 2.x calls).
+  const autoCompactor = engine && uploadedSessionId ? autoCompactorsByServer.get(input.config) : undefined;
+  if (autoCompactor && engine && uploadedSessionId) {
+    const outcome = await autoCompactor.beforePrompt(uploadedSessionId, desktopAutoCompactEngine(engine, uploadedSessionId), body)
+      .catch((error: unknown): AutoCompactOutcome => ({ action: "failed", reason: error instanceof Error ? error.message : String(error) }));
+    if (outcome.action !== "none") createServerLogger(input.config).log("info", "Automatic compaction.", { "auto_compact.action": outcome.action, "auto_compact.reason": outcome.reason ?? "", "auto_compact.turns": outcome.turns ?? -1 });
+  }
+  // Steering (turn-steer.ts): the 2.x engine delivers a prompt to a running chat into its turn; such a
+  // prompt opens no turn of its own (no start snapshot, no archive start) and is recorded as "turn.steer".
+  const steerSentAt = Date.now();
+  const turnKind = capture && uploadedSessionId && engine ? await createSteerTracker(engine).classify(uploadedSessionId) : null;
+  const steer = Boolean(turnKind?.steer && uploadedSessionId && capture?.hasSession(uploadedSessionId));
   // A reopened chat's turns before this prompt: its turn numbers (uploads and box checkpoints) carry on from them.
-  const turnsBefore = capture && uploadedSessionId && engine ? await turnsBeforeCapture(capture, uploadedSessionId, engine) : 0;
+  const turnsBefore = capture && uploadedSessionId && engine && !steer ? await turnsBeforeCapture(capture, uploadedSessionId, engine) : 0;
   // The Linux sandbox (box/): a prompt of a workspace whose box is on starts the box, and takes the turn's checkpoint when it is captured.
   // One pin per chat: a chat that runs in the box is not moved to this computer when its project's box is off.
   const pinnedBoxWhy = promptDispatch && sessionId ? await boxServiceFor(input.config).pinnedBoxUnavailable(sessionId, input.workspace) : null;
   if (pinnedBoxWhy) throw new ApiError(409, "chat_pinned_box", pinnedBoxMessage(pinnedBoxWhy));
   const boxInfo = promptDispatch && sessionId
-    ? await boxServiceFor(input.config).beforePrompt(sessionId, input.workspace, { capture: Boolean(uploadedSessionId && engine), turnsBefore, nativeModel: await promptsNativeOnlyModel(input.config, body), signal: input.request.signal })
+    ? await boxServiceFor(input.config).beforePrompt(sessionId, input.workspace, { capture: Boolean(uploadedSessionId && engine) && !steer, turnsBefore, nativeModel: await promptsNativeOnlyModel(input.config, body), signal: input.request.signal })
     : null;
   if (promptDispatch && input.request.signal.aborted) return stoppedSendResponse(input.config, sessionId);
-  if (capture && uploadedSessionId && engine) {
+  if (capture && uploadedSessionId && engine && !steer) {
     // The turn before's background processes finish writing (at most 10 s after it ended), its project
     // delta is taken (at most 5 s more, only when it ended a moment ago), then capture v2's session-start
     // manifest is taken before the prompt reaches the engine (at most about 3 s).
@@ -2198,22 +2314,34 @@ export async function proxyOpencodeV2Request(input: {
     capture.boxSession(uploadedSessionId, boxInfo);
     capture.permissionMode(await capturePermissionMode(input.config));
     capture.startSession(uploadedSessionId, input.workspace.id, input.workspace.path, turnsBefore);
+    if (input.migratedFromV1?.(uploadedSessionId)) capture.recordTrace(uploadedSessionId, "engine.migrated_from", { from: MIGRATED_FROM, exclude_from_delivery: true });
     const boxPlan = await boxServiceFor(input.config).planOutcome(uploadedSessionId, input.workspace).catch(() => null);
     if (boxPlan) capture.recordTrace(uploadedSessionId, "box.plan", boxPlan);
     capture.recordPrompt(uploadedSessionId, { method, path: routePath, body: requestBody, engine: "v2", root: input.workspace.path, attachments: true, dispatchedAt: Date.now() });
     capture.captureSnapshot(uploadedSessionId, "prompt");
     capture.archiveSessionStarted(uploadedSessionId, input.workspace.path, engine);
   }
-  if (promptDispatch && sessionId) void pinChatCapturePolicy(input.config, capture, sessionId);
+  if (promptDispatch && sessionId && !steer) void pinChatCapturePolicy(input.config, capture, sessionId);
   // A parallel task's first prompt (routes/workspace-tasks.ts): only task workspaces.
-  if (input.workspace.task && promptDispatch && sessionId) {
+  if (input.workspace.task && promptDispatch && sessionId && !steer) {
     await noteTaskPrompt(input.workspace, sessionId, (id, type, data) => recordOpenSessionTrace(input.config, id, type, data));
   }
   if (promptDispatch && input.request.signal.aborted) return stoppedSendResponse(input.config, sessionId);
   const response = await loopbackFetch(target.toString(), { method, headers, body, signal: input.recoverySignal });
   // The engine has the prompt: its session status says busy from now on.
   turnActivity?.promptDispatched();
-  if (capture && uploadedSessionId && engine) {
+  if (capture && uploadedSessionId && engine && steer) {
+    if (response.ok) {
+      // The turn goes on (followed as before); the steer's record is found in the background.
+      capture.followSteer(uploadedSessionId, engine);
+      const reason = turnKind?.reason ?? "working";
+      const known = claimedSteerIds(uploadedSessionId);
+      void createSteerTracker(engine).describe(uploadedSessionId, steerSentAt, { known }).then((found) => {
+        if (found) claimSteerId(known, found.message_id);
+        capture.steerTurn(uploadedSessionId, steerRecord(found, steerSentAt, reason));
+      }).catch(() => capture.steerTurn(uploadedSessionId, steerRecord(null, steerSentAt, reason)));
+    }
+  } else if (capture && uploadedSessionId && engine) {
     capture.recordTrace(uploadedSessionId, "engine.response", { method, path: routePath, status: response.status });
     if (response.ok) capture.observeSession(uploadedSessionId, engine);
   }
@@ -2305,13 +2433,17 @@ export async function proxyOpencodeV2Request(input: {
     const items = Array.isArray(data) ? data : isRecord(data) && Array.isArray(data.items) ? data.items : null;
     if (!items) throw new ApiError(502, "invalid_engine_response", "Invalid session list response");
     const expected = await realpath(input.workspace.path).catch(() => input.workspace.path);
+    const flags = readArchivedChats(runtimeStorageDir(input.config));
     const scoped = (await Promise.all(items.map(async (item: unknown) => {
       const session = isRecord(item) && isRecord(item.info) ? item.info : item;
       const location = isRecord(session) && isRecord(session.location) ? session.location : null;
       const directory = location && typeof location.directory === "string" ? location.directory : null;
       if (!directory) return null;
       const actual = await realpath(directory).catch(() => directory);
-      return actual === expected ? item : null;
+      if (actual !== expected) return null;
+      return isRecord(item) && isRecord(item.info)
+        ? { ...item, info: withArchived(runtimeStorageDir(input.config), item.info, flags) }
+        : withArchived(runtimeStorageDir(input.config), item, flags);
     }))).filter((item) => item !== null);
     const scopedData = isRecord(data) ? { ...data, items: scoped } : scoped;
     const scopedPayload = isRecord(payload) && "data" in payload ? { ...payload, data: scopedData } : scopedData;
@@ -2319,6 +2451,12 @@ export async function proxyOpencodeV2Request(input: {
     responseHeaders.delete("content-length");
     responseHeaders.delete("content-encoding");
     return sanitizeProxyResponse(new Response(JSON.stringify(scopedPayload), { status: response.status, headers: responseHeaders }));
+  }
+  if (method === "GET" && /^\/api\/session\/[^/]+$/.test(routePath) && response.ok) {
+    const payload: unknown = await response.json();
+    const data = isRecord(payload) && "data" in payload ? payload.data : payload;
+    const shaped = isRecord(data) && isRecord(data.info) ? { ...data, info: withArchived(runtimeStorageDir(input.config), data.info) } : withArchived(runtimeStorageDir(input.config), data);
+    return jsonResponse(isRecord(payload) && "data" in payload ? { ...payload, data: shaped } : shaped, response.status);
   }
   return sanitizeProxyResponse(response);
 }
@@ -2503,6 +2641,12 @@ export async function proxyOpencodeRequest(input: {
     ensureWritable(input.config);
   }
   assertEngineMcpRouteAllowed(input.config, method, normalizeOpencodeProxyPath(proxyPath));
+  // Chats run on the 2.x engine (/opencode2): the 1.x engine starts no chat and no turn.
+  if (workspace && workspace.workspaceType !== "remote" && startsV1Chat(method, proxyPath)
+    && resolveInitialEngineV2PreviewState(process.env).chatRouting) {
+    await input.request.arrayBuffer().catch(() => undefined);
+    return jsonResponse({ error: "engine_v1_retired", message: "Chats now run on the new engine. Update OmniRush.ai or reopen the chat." }, 409);
+  }
   if (workspace && workspace.workspaceType !== "remote" && isUploadPromptDispatch(method, proxyPath)) {
     if (uploadDispatchRefused(input.config, workspace)) {
       // Drain the unread body so the client's keep-alive connection stays usable.
@@ -4794,6 +4938,9 @@ function createRoutes(
     if (body.chatRouting !== undefined && typeof body.chatRouting !== "boolean") {
       throw new ApiError(400, "invalid_payload", "chatRouting must be a boolean");
     }
+    if (body.enabled === false || body.chatRouting === false) {
+      throw new ApiError(409, "engine_v2_required", "The 2.x engine runs every chat and cannot be turned off.");
+    }
     let status = engineV2Preview.status();
     if (typeof body.enabled === "boolean") status = await engineV2Preview.setEnabled(body.enabled);
     if (typeof body.chatRouting === "boolean") status = await engineV2Preview.setChatRouting(body.chatRouting);
@@ -5136,6 +5283,26 @@ function createRoutes(
   // The desktop editor. A save or a hunk review that names a chat the session
   // uploader is tracking adds a "user_edit" / "user_review" trace event to it;
   // nothing else in a chat's upload changes (editor-events.ts).
+  // The editor's language features (editor-lsp.ts): the app's own language-server host.
+  addRoute(routes, "POST", "/workspace/:id/editor/lsp/:op", "client", async (ctx) => {
+    const op = ctx.params.op as LspOp;
+    if (!LSP_OPS.includes(op)) throw new ApiError(404, "not_found", "Unknown language request");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    if (workspace.workspaceType === "remote") throw new ApiError(404, "not_found", "Language features run for local projects only");
+    const input = await readJsonBody(ctx.request);
+    const payload: LspPayload = {
+      ...(typeof input.path === "string" ? { path: input.path } : {}),
+      ...(typeof input.line === "number" ? { line: input.line } : {}),
+      ...(typeof input.character === "number" ? { character: input.character } : {}),
+      ...(typeof input.newName === "string" ? { newName: input.newName } : {}),
+      ...(typeof input.text === "string" ? { text: input.text } : {}),
+    };
+    try {
+      return jsonResponse(await editorLspFor(config).run(await realpath(workspace.path).catch(() => workspace.path), op, payload));
+    } catch (error) {
+      throw new ApiError(400, "invalid_payload", error instanceof Error ? error.message : String(error));
+    }
+  });
   // /btw: a side question about a chat, answered without touching it (side-question.ts).
   addRoute(routes, "POST", "/workspace/:id/btw", "client", async (ctx) => {
     const workspace = await resolveWorkspace(config, ctx.params.id);
@@ -5454,7 +5621,6 @@ function createRoutes(
         mode: mcpPolicyForConfig(config),
         enabled,
         message: enabled ? policy?.message ?? null : mcpDisabledMessage(config),
-        engineV2: engineV2Preview.status().chatRouting === true,
         supported: enabled && policy ? policy.allow.map(mcpPreset) : [],
         decisions,
         reportAt: report?.at ?? null,

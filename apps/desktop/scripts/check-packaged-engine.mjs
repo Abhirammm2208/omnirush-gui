@@ -18,7 +18,7 @@ if (build.variant !== "release") fail(`expected a release build, found "${build.
 if (!build.engineSha256) fail("the build records no engine sha256");
 
 const sidecars = path.join(resources, "sidecars");
-const engines = readdirSync(sidecars).filter((name) => /^opencode(?:-[a-z0-9_-]+)?(?:\.exe)?$/.test(name) && !/^opencode-v\d|^opencode2/.test(name));
+const engines = readdirSync(sidecars).filter((name) => /^opencode2?(?:-[a-z0-9_-]+)?(?:\.exe)?$/.test(name));
 if (!engines.length) fail(`no bundled engine in ${sidecars}`);
 
 const guard = await import(pathToFileURL(path.join(asar, "server", "dist", "release-guard.js")).href);

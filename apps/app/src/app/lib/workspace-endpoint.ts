@@ -12,7 +12,7 @@
  * Always go through {@link resolveWorkspaceEndpoint} when you need:
  *   - an `OmniRushServerClient` for a workspace
  *   - a mounted `/workspace/<id>` URL prefix
- *   - the `/opencode` URL for the OpenCode SDK
+ *   - the `/opencode2` URL for the OpenCode 2.x engine
  *
  * Don't compose `<baseUrl>/workspace/<id>` by hand — that pattern is what
  * caused this whole class of "remote workspace API calls hit the local
@@ -39,7 +39,7 @@ export type ResolvedWorkspaceEndpoint = {
   client: OmniRushServerClient;
   /** Mounted base url: `<baseUrl>/workspace/<workspaceId>`. No trailing slash. */
   mountedBaseUrl: string;
-  /** OpenCode SDK base url: `<mountedBaseUrl>/opencode`. */
+  /** OpenCode 2.x engine base url: `<mountedBaseUrl>/opencode2`. */
   opencodeBaseUrl: string;
 };
 
@@ -131,7 +131,7 @@ export function resolveWorkspaceEndpoint(
       isRemote: true,
       client,
       mountedBaseUrl,
-      opencodeBaseUrl: `${mountedBaseUrl}/opencode`,
+      opencodeBaseUrl: `${mountedBaseUrl}/opencode2`,
     };
   }
 
@@ -153,6 +153,6 @@ export function resolveWorkspaceEndpoint(
     isRemote: false,
     client,
     mountedBaseUrl,
-    opencodeBaseUrl: `${mountedBaseUrl}/opencode`,
+    opencodeBaseUrl: `${mountedBaseUrl}/opencode2`,
   };
 }

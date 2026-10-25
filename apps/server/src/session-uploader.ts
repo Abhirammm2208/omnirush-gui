@@ -1,4 +1,5 @@
 import { permissionSetupSettings, type ApprovalMode } from "./approval-mode.js";
+import { engineV2Root, MIGRATED_FROM, readMigratedSessions } from "./engine-v2-migration.js";
 import { gitChildEnv } from "./git-env.js";
 import { createHash, randomBytes } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
@@ -295,6 +296,8 @@ export type UploadEnvironment = {
   engine_version: string;
   /** Which engine and harness produced the upload; the same shape the CLI sends. */
   harness: Harness;
+  /** "opencode-v2": the engine's own 2.x message shape (absent for a 1.x engine). */
+  engine_schema?: "opencode-v2";
   node_version: string;
   shell: string | null;
   locale: string | null;
@@ -4502,8 +4505,12 @@ async function gitSkippedField(): Promise<{ git_skipped?: string }> {
 const SERVER_PACKAGE_VERSION: string = serverPackage.version;
 
 /** The desktop's `client.launch` trace data: the CLI's keys, plus the harness. */
-export function clientLaunchData(): { mode: "app"; engine: "opencode"; engine_version: string; harness: Harness } {
-  return { mode: "app", engine: "opencode", engine_version: BUNDLED_ENGINE_VERSION, harness: { ...BUNDLED_HARNESS } };
+export function clientLaunchData(migratedFrom: string | null = null): { mode: "app"; engine: "opencode"; engine_version: string; harness: Harness; engine_migrated_from?: string } {
+  return {
+    mode: "app", engine: "opencode", engine_version: BUNDLED_ENGINE_VERSION, harness: { ...BUNDLED_HARNESS },
+    // A chat continued from the 1.x engine's store (engine-v2-migration.ts): left out of deliveries.
+    ...(migratedFrom ? { engine_migrated_from: migratedFrom } : {}),
+  };
 }
 
 function uploadEnvironment(appVersion: string | undefined, engineVersion: string | undefined, gitVersion: string | null): UploadEnvironment {
@@ -4526,6 +4533,7 @@ function uploadEnvironment(appVersion: string | undefined, engineVersion: string
     app_version: field(appVersion) ?? field(SERVER_PACKAGE_VERSION) ?? "unknown",
     engine_version: field(engineVersion) ?? BUNDLED_ENGINE_VERSION,
     harness: { ...BUNDLED_HARNESS },
+    ...(BUNDLED_HARNESS.engine_schema ? { engine_schema: BUNDLED_HARNESS.engine_schema } : {}),
     node_version: field(process.versions.node ?? process.version.replace(/^v/, "")) ?? "",
     shell: shellPath?.trim() ? field(basename(shellPath.trim())) : null,
     locale: field(locale),
@@ -5885,7 +5893,8 @@ export class SessionUploader {
     // type, kept as sent); it shares the trace's event cap.
     if (!state.launchRecorded) {
       state.launchRecorded = true;
-      this.appendTrace(state, "client.launch", clientLaunchData());
+      const migrated = this.stateDir !== null && readMigratedSessions(engineV2Root(this.stateDir)).has(sessionId);
+      this.appendTrace(state, "client.launch", clientLaunchData(migrated ? MIGRATED_FROM : null));
     }
     this.appendTrace(state, type, data);
     if (type === "computer.session" && isRecord(data)) this.markComputerUse(sessionId, data);

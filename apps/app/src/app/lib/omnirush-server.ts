@@ -4,6 +4,7 @@ import type {
   SkillFileTree,
   SkillUploadFile,
 } from "./skill-upload";
+import { v2McpStatusMap } from "./opencode-v2-adapter";
 import type { McpStatusMap } from "../types";
 import type { Message, Part, Session, Todo } from "@opencode-ai/sdk/v2/client";
 import {
@@ -736,8 +737,6 @@ export type OmniRushMcpPolicyView = {
   mode: "allowlist" | "disabled";
   enabled: boolean;
   message: string | null;
-  /** The preview engine routes chats: MCP stays off there. */
-  engineV2?: boolean;
   supported: OmniRushMcpPreset[];
   decisions: OmniRushMcpDecision[];
   reportAt: number | null;
@@ -2489,8 +2488,9 @@ export function createOmniRushServerClient(options: { baseUrl: string; token?: s
         `/workspace/${workspaceId}/mcp`,
         { token, hostToken },
       ),
-    getMcpStatus: (workspaceId: string) =>
-      requestJson<McpStatusMap>(baseUrl, `/workspace/${encodeURIComponent(workspaceId)}/opencode/mcp`, { token, hostToken }),
+    // The 2.x engine runs every chat: its MCP status, as the 1.x status map.
+    getMcpStatus: async (workspaceId: string) =>
+      v2McpStatusMap(await requestJson<unknown>(baseUrl, `/workspace/${encodeURIComponent(workspaceId)}/opencode2/api/mcp`, { token, hostToken })) as McpStatusMap,
     listMcpApps: (workspaceId: string) =>
       requestJson<{ servers: OmniRushMcpAppCatalogServer[] }>(
         baseUrl,
@@ -2917,14 +2917,14 @@ export function createOmniRushServerClient(options: { baseUrl: string; token?: s
         signal,
       }),
 
-    /** The engine's language features for the editor (the project's own language servers); see the engine's /editor routes. */
+    /** The editor's language features (the app server's language-server host, editor-lsp.ts). */
     editorLsp: <T = unknown>(
       workspaceId: string,
       op: "diagnostics" | "hover" | "definition" | "references" | "symbols" | "rename",
       payload: { path?: string; line?: number; character?: number; newName?: string; text?: string },
       signal?: AbortSignal,
     ) =>
-      requestJson<T>(baseUrl, `/workspace/${encodeURIComponent(workspaceId)}/opencode/editor/lsp/${op}`, {
+      requestJson<T>(baseUrl, `/workspace/${encodeURIComponent(workspaceId)}/editor/lsp/${op}`, {
         token,
         hostToken,
         method: "POST",

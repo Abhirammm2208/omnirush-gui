@@ -108,7 +108,8 @@ export async function startEmbeddedServer(options: EmbeddedServerOptions): Promi
   config.localManagedMcpVaultKey = options.localManagedMcpVaultKey;
   config.omnirushGatewayCredentials = options.omnirushGatewayCredentials;
   config.omnirushEngineToken = randomUUID();
-  config.resumeInterruptedTasks = options.resumeInterruptedTasks === true && options.manageOpencode === true && !config.opencodeBaseUrl;
+  // Interrupted tasks resume on the app's own engines (the 2.x one runs whether or not a 1.x engine is managed).
+  config.resumeInterruptedTasks = options.resumeInterruptedTasks === true && !config.opencodeBaseUrl;
   config.appVersion = typeof options.appVersion === "string" && options.appVersion.trim() ? options.appVersion.trim() : undefined;
   config.captureFileUpload = options.captureFileUpload;
   config.clearUploadQueue = options.clearUploadQueue === true;

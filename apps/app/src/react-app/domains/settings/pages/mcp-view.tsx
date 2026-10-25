@@ -1579,7 +1579,7 @@ export function McpView(props: McpViewProps) {
           <McpSupportedPanel
             policy={mcpPolicy}
             servers={props.mcpServers.filter((entry) => !isConnectDirectMcpServerName(entry.name) && entry.name !== "omnirush-cloud")}
-            canAdd={props.allowManageExtensions && !props.isRemoteWorkspace && mcpPolicy.engineV2 !== true}
+            canAdd={props.allowManageExtensions && !props.isRemoteWorkspace}
             busy={props.busy}
             addPreset={addSupportedMcp}
             signIn={signInSupportedMcp}

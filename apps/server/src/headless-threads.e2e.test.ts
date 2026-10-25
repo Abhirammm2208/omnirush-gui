@@ -1,282 +1,87 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { createHeadlessThreadClient } from "@omnirush/headless-threads";
 
-import { startServer } from "./server.js";
-import type { ServerConfig } from "./types.js";
+import { createManagedOpencodeV2Server, type ManagedOpencodeV2Server } from "./managed-opencode-v2.js";
 
-import { afterAll as afterAllUnlocked, beforeAll as beforeAllUnlocked } from "bun:test";
-import { applyProviderLockAnswer, resetProviderLock } from "./provider-lock.js";
+// The headless client (automations) against the real bundled 2.x engine, through a stand-in for the
+// server's `/workspace/:id/opencode2` mount (the mount itself: opencode-proxy and session-uploader tests).
+const triple = process.arch === "arm64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu";
+const engineBin = process.env.OMNIRUSH_OPENCODE2_BIN?.trim()
+  || join(resolve(import.meta.dir, "../../.."), `apps/desktop/resources/sidecars/opencode2-${triple}`);
+const realEngine = process.platform === "linux" && existsSync(engineBin) ? test : test.skip;
 
-// These cover the app while the server leaves model providers unlocked
-// (providers.locked false); provider-lock.test.ts covers the lock.
-beforeAllUnlocked(() => { applyProviderLockAnswer({ providers: { locked: false } }); });
-afterAllUnlocked(() => resetProviderLock());
+let root = "";
+let engine: ManagedOpencodeV2Server | undefined;
+let model: ReturnType<typeof Bun.serve> | undefined;
+let mount: ReturnType<typeof Bun.serve> | undefined;
 
-// These tests dispatch prompts through a local workspace without an omnirush.ai
-// account. The server's sign-in gate refuses that unless both development
-// flags are set; the gate itself is covered by session-uploader.server.e2e.test.ts.
-const uploadGateEnv = { OMNIRUSH_DEV_MODE: process.env.OMNIRUSH_DEV_MODE, OMNIRUSH_SESSION_UPLOAD_OPTIONAL: process.env.OMNIRUSH_SESSION_UPLOAD_OPTIONAL };
-beforeAll(() => {
-  process.env.OMNIRUSH_DEV_MODE = "1";
-  process.env.OMNIRUSH_SESSION_UPLOAD_OPTIONAL = "1";
-});
-afterAll(() => {
-  for (const [name, value] of Object.entries(uploadGateEnv)) {
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
-  }
-});
-
-
-type Served = {
-  port: number;
-  stop: (closeActiveConnections?: boolean) => void | Promise<void>;
-};
-
-const SESSION_ID = "ses_headless";
-const FIRST_ANSWER = "The refund window closed after 30 days.";
-const SECOND_ANSWER = "Without a receipt, use the order lookup.";
-
-const stops: Array<() => void | Promise<void>> = [];
-const roots: string[] = [];
-
-afterEach(async () => {
-  while (stops.length) await stops.pop()?.();
-  while (roots.length) await rm(roots.pop()!, { recursive: true, force: true });
-});
-
-function message(id: string, role: string, text: string) {
-  return {
-    info: { id, sessionID: SESSION_ID, role, time: { created: 100 } },
-    parts: [{ id: `prt_${id}`, messageID: id, sessionID: SESSION_ID, type: "text", text }],
-  };
-}
-
-const USER_1 = message("msg_1", "user", "A customer wants a refund after 40 days.");
-const ASSISTANT_1 = message("msg_2", "assistant", FIRST_ANSWER);
-const USER_2 = message("msg_3", "user", "They also lost the receipt.");
-const ASSISTANT_2 = message("msg_4", "assistant", SECOND_ANSWER);
-
-/**
- * What the engine looks like at each step of two turns. Beat 0 and beat 3 are
- * the moments that matter: the thread has accepted a prompt but has not
- * started, so it reads idle with no new reply. A client that settles there
- * reports a turn finished before it began.
- */
-const BEATS = [
-  { busy: false, messages: [USER_1] },
-  { busy: true, messages: [USER_1] },
-  { busy: false, messages: [USER_1, ASSISTANT_1] },
-  { busy: false, messages: [USER_1, ASSISTANT_1, USER_2] },
-  { busy: true, messages: [USER_1, ASSISTANT_1, USER_2] },
-  { busy: false, messages: [USER_1, ASSISTANT_1, USER_2, ASSISTANT_2] },
-];
-
-async function createWorkspaceRoot() {
-  const root = await mkdtemp(join(tmpdir(), "omnirush-headless-threads-"));
-  await mkdir(join(root, ".opencode"), { recursive: true });
-  roots.push(root);
-  return root;
-}
-
-/**
- * A managed-OpenCode stand-in. It only moves to the next beat when `advance()`
- * is called, which the test wires to the client's sleep — so the whole journey
- * is deterministic and needs no wall-clock waiting.
- */
-function startMockOpencode() {
-  const prompts: Array<Record<string, unknown>> = [];
-  let aborted = 0;
-  let beat = 0;
-
-  const server = Bun.serve({
+beforeAll(async () => {
+  if (!existsSync(engineBin) || process.platform !== "linux") return;
+  root = await mkdtemp(join(tmpdir(), "headless-v2-"));
+  await mkdir(join(root, "project"), { recursive: true });
+  // A model that answers every request with "ok" (chat completions, streamed).
+  model = Bun.serve({
+    port: 0,
     hostname: "127.0.0.1",
+    fetch: () => {
+      const chunk = (delta: unknown, finish: string | null) => `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: "m", choices: [{ index: 0, delta, finish_reason: finish }], ...(finish ? { usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } } : {}) })}\n\n`;
+      return new Response(`${chunk({ role: "assistant", content: "ok" }, null)}${chunk({}, "stop")}data: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  engine = await createManagedOpencodeV2Server({ bin: engineBin, rootDir: join(root, "engine"), bootTimeoutMs: 90_000, env: { HOME: join(root, "home") } });
+  await engine.setProviders([{ id: "omnirush", name: "OmniRush", baseUrl: `http://127.0.0.1:${model.port}/v1`, package: "@opencode-ai/ai/providers/openai-compatible", apiKey: "x", models: [{ id: "test-model", name: "test-model", config: { tool_call: true } }] }]);
+  for (let i = 0; i < 120 && !JSON.stringify((await engine.fetchJson("/api/model", { directory: join(root, "project") })).json).includes("test-model"); i += 1) await Bun.sleep(250);
+  const active = engine;
+  mount = Bun.serve({
     port: 0,
-    async fetch(request) {
+    hostname: "127.0.0.1",
+    fetch: async (request) => {
       const url = new URL(request.url);
-      const current = BEATS[Math.min(beat, BEATS.length - 1)];
-      const session = {
-        id: SESSION_ID,
-        title: "Refund policy",
-        slug: "refund-policy",
-        directory: request.headers.get("x-opencode-directory"),
-        time: { created: 100, updated: 100 },
-      };
-
-      if (url.pathname === "/session" && request.method === "POST") return Response.json(session);
-      if (url.pathname === "/session" && request.method === "GET") return Response.json([session]);
-      if (url.pathname === `/session/${SESSION_ID}`) return Response.json(session);
-      if (url.pathname === `/session/${SESSION_ID}/message`) return Response.json(current.messages);
-      if (url.pathname === `/session/${SESSION_ID}/todo`) return Response.json([]);
-      if (url.pathname === "/session/status") {
-        return Response.json(current.busy ? { [SESSION_ID]: { type: "busy" } } : {});
-      }
-      if (url.pathname === `/session/${SESSION_ID}/prompt_async` && request.method === "POST") {
-        prompts.push(await request.json());
-        return new Response(null, { status: 204 });
-      }
-      if (url.pathname === `/session/${SESSION_ID}/abort` && request.method === "POST") {
-        aborted += 1;
-        return Response.json(true);
-      }
-      return Response.json({ code: "not_found", message: `Not found: ${request.method} ${url.pathname}` }, { status: 404 });
+      const target = new URL(active.url);
+      target.pathname = url.pathname.replace(/^\/workspace\/ws_1\/opencode2/, "");
+      target.search = url.search;
+      target.searchParams.set("location[directory]", join(root, "project"));
+      const body = request.method === "GET" ? undefined : await request.text();
+      const forwarded = url.pathname.endsWith("/api/session") && request.method === "POST"
+        ? JSON.stringify({ ...JSON.parse(body || "{}"), location: { directory: join(root, "project") } })
+        : body;
+      const answer = await fetch(target, { method: request.method, headers: { authorization: `Basic ${Buffer.from(`opencode:${active.password}`).toString("base64")}`, "content-type": "application/json" }, body: forwarded });
+      return new Response(await answer.arrayBuffer(), { status: answer.status, headers: { "content-type": answer.headers.get("content-type") ?? "application/json" } });
     },
-  }) as Served;
-  stops.push(() => server.stop(true));
-
-  return {
-    server,
-    prompts,
-    advance: () => {
-      beat += 1;
-    },
-    abortCount: () => aborted,
-  };
-}
-
-async function startOmniRushServer(input: { workspaceRoot: string; opencodeBaseUrl: string }) {
-  const config: ServerConfig = {
-    host: "127.0.0.1",
-    port: 0,
-    token: "owt_test_token",
-    hostToken: "owt_host_token",
-    approval: { mode: "auto", timeoutMs: 1000 },
-    corsOrigins: ["*"],
-    workspaces: [
-      {
-        id: "ws_1",
-        name: "Workspace",
-        path: input.workspaceRoot,
-        preset: "starter",
-        workspaceType: "local",
-        baseUrl: input.opencodeBaseUrl,
-      },
-    ],
-    authorizedRoots: [input.workspaceRoot],
-    readOnly: false,
-    startedAt: Date.now(),
-    tokenSource: "cli",
-    hostTokenSource: "cli",
-    logFormat: "pretty",
-    logRequests: false,
-  };
-  const server = await startServer(config) as Served;
-  stops.push(() => server.stop(true));
-  return { server, token: config.token };
-}
-
-test("drives two headless turns on a native OmniRush.ai thread", async () => {
-  const workspaceRoot = await createWorkspaceRoot();
-  const engine = startMockOpencode();
-  const omnirush = await startOmniRushServer({
-    workspaceRoot,
-    opencodeBaseUrl: `http://127.0.0.1:${engine.server.port}`,
   });
+}, 120_000);
 
-  let clock = 0;
-  const threads = createHeadlessThreadClient({
-    baseUrl: `http://127.0.0.1:${omnirush.server.port}`,
+afterAll(async () => {
+  await mount?.stop(true);
+  await engine?.close();
+  await model?.stop(true);
+  if (root) await rm(root, { recursive: true, force: true });
+});
+
+realEngine("drives two headless turns on a native 2.x thread", async () => {
+  const client = createHeadlessThreadClient({
+    baseUrl: `http://127.0.0.1:${mount!.port}`,
     workspaceId: "ws_1",
-    token: omnirush.token,
-    defaultModel: { providerId: "anthropic", modelId: "claude-sonnet-5" },
-    now: () => clock,
-    // Each poll gap moves the engine exactly one beat, so the journey below is
-    // reproducible and never waits on real time.
-    sleep: async (ms) => {
-      clock += ms;
-      engine.advance();
-    },
+    token: "owt_test",
+    defaultModel: { providerId: "omnirush", modelId: "test-model" },
   });
-
-  const thread = await threads.createThread({
-    title: "Refund policy",
-    prompt: "A customer wants a refund after 40 days.",
-  });
-
-  expect(thread.id).toBe(SESSION_ID);
+  const thread = await client.createThread({ title: "Headless", prompt: "Say ok." });
   expect(thread.started).toBe(true);
-  expect(thread.directory).toBe(workspaceRoot);
-  expect(engine.prompts).toHaveLength(1);
-  expect(engine.prompts[0]).toEqual({
-    parts: [{ type: "text", text: "A customer wants a refund after 40 days." }],
-    model: { providerID: "anthropic", modelID: "claude-sonnet-5" },
-  });
+  const first = await client.waitForThread(thread.id, { timeoutMs: 60_000, since: { messageCountBefore: 0, messageId: null } });
+  expect(first.outcome).toBe("settled");
 
-  const firstWait = await threads.waitForThread(thread.id, { timeoutMs: 60_000, pollIntervalMs: 10 });
+  const accepted = await client.sendTurn(thread.id, { prompt: "Again.", messageId: "msg_headless_2" });
+  const second = await client.waitForThread(thread.id, { timeoutMs: 60_000, since: accepted });
+  expect(second.outcome).toBe("settled");
+  // Sending the same message id again is not a second turn.
+  expect((await client.sendTurn(thread.id, { prompt: "Again.", messageId: "msg_headless_2" })).alreadyPresent).toBe(true);
 
-  expect(firstWait.outcome).toBe("settled");
-  expect(firstWait.observedRunning).toBe(true);
-  // Beat 0 was idle with no reply yet: settling there would have been wrong.
-  expect(firstWait.polls).toBe(3);
-
-  const firstTranscript = await threads.exportTranscript(thread.id);
-  expect(firstTranscript.finalAssistantText).toBe(FIRST_ANSWER);
-  expect(firstTranscript.messages.map((entry) => entry.role)).toEqual(["user", "assistant"]);
-
-  const followUp = await threads.sendTurn(thread.id, { prompt: "They also lost the receipt." });
-
-  expect(followUp.messageCountBefore).toBe(2);
-  expect(engine.prompts).toHaveLength(2);
-  expect(engine.prompts[1]).toEqual({
-    parts: [{ type: "text", text: "They also lost the receipt." }],
-    model: { providerID: "anthropic", modelID: "claude-sonnet-5" },
-  });
-
-  const secondWait = await threads.waitForThread(thread.id, {
-    timeoutMs: 60_000,
-    pollIntervalMs: 10,
-    since: followUp,
-  });
-
-  expect(secondWait.outcome).toBe("settled");
-  expect(secondWait.observedRunning).toBe(true);
-  // The first answer was already in the thread; only the new one settles it.
-  expect(secondWait.polls).toBe(4);
-
-  const transcript = await threads.exportTranscript(thread.id);
-  expect(transcript.finalAssistantText).toBe(SECOND_ANSWER);
-  expect(transcript.messages.map((entry) => entry.text)).toEqual([
-    "A customer wants a refund after 40 days.",
-    FIRST_ANSWER,
-    "They also lost the receipt.",
-    SECOND_ANSWER,
-  ]);
-
-  await expect(threads.abortThread(thread.id)).resolves.toEqual({ threadId: thread.id, accepted: true });
-  expect(engine.abortCount()).toBe(1);
-});
-
-test("leaves the thread readable through the session surface the app uses", async () => {
-  const workspaceRoot = await createWorkspaceRoot();
-  const engine = startMockOpencode();
-  const omnirush = await startOmniRushServer({
-    workspaceRoot,
-    opencodeBaseUrl: `http://127.0.0.1:${engine.server.port}`,
-  });
-  const base = `http://127.0.0.1:${omnirush.server.port}`;
-
-  const thread = await createHeadlessThreadClient({
-    baseUrl: base,
-    workspaceId: "ws_1",
-    token: omnirush.token,
-  }).createThread({ title: "Refund policy" });
-
-  // The app lists and opens sessions through the native workspace mount. A headless thread
-  // is an ordinary session, so it has to be visible here with the same id.
-  const listed = await fetch(`${base}/workspace/ws_1/opencode/session`, {
-    headers: { Authorization: `Bearer ${omnirush.token}` },
-  });
-  expect(listed.status).toBe(200);
-  const listedBody = await listed.json();
-  expect(listedBody.map((item: { id: string }) => item.id)).toContain(thread.id);
-
-  const opened = await fetch(`${base}/workspace/ws_1/opencode/session/${thread.id}`, {
-    headers: { Authorization: `Bearer ${omnirush.token}` },
-  });
-  expect(opened.status).toBe(200);
-  await expect(opened.json()).resolves.toMatchObject({ id: thread.id, title: "Refund policy" });
-});
+  const transcript = await client.exportTranscript(thread.id);
+  expect(JSON.stringify(transcript)).toContain("ok");
+  expect((await client.abortThread(thread.id)).threadId).toBe(thread.id);
+}, 180_000);

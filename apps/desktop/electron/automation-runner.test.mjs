@@ -3,13 +3,90 @@ import test from "node:test"
 
 import {
   classifyAutomationExecutionError,
-  createDesktopAutomationRunner,
-  executeDesktopAutomation,
-  executeDesktopRemoteSession,
+  createDesktopAutomationRunner as createRunnerOn2,
+  executeDesktopAutomation as executeAutomationOn2,
+  executeDesktopRemoteSession as executeRemoteSessionOn2,
   normalizeRunnerBaseUrl,
   resolveAssignmentWorkspace,
   runnerTokenAudience,
 } from "./automation-runner.mjs"
+
+// The runner talks to the 2.x engine (/opencode2/api, headless-threads). These tests keep their 1.x-shaped fake
+// engine: this shim answers each 2.x request from the fake's 1.x route and shape (the 2.x wire itself is covered by
+// headless-threads' own tests and its real-engine e2e).
+function throughV2(fetchImpl) {
+  if (!fetchImpl) return fetchImpl
+  const models = new Map()
+  const v1 = (url, path) => { const next = new URL(url); next.pathname = path; next.search = ""; return next.toString() }
+  const passFailure = (response) => !response.ok
+  const json = async (response) => { const text = await response.text(); return text ? JSON.parse(text) : null }
+  const v2Message = (message) => {
+    const info = message?.info ?? {}
+    const parts = Array.isArray(message?.parts) ? message.parts : []
+    if (info.role === "user") return { id: info.id, type: "user", time: info.time, text: parts.filter((part) => part.type === "text").map((part) => part.text ?? "").join("") }
+    return {
+      id: info.id, type: "assistant", time: info.time, ...(info.error !== undefined ? { error: info.error } : {}),
+      ...(info.tokens ? { tokens: info.tokens } : {}), ...(info.cost !== undefined ? { cost: info.cost } : {}),
+      content: parts.map((part) => (part.type === "tool" ? { type: "tool", id: part.callID ?? part.id, name: part.tool, state: part.state ?? {} } : { type: part.type, text: part.text })),
+    }
+  }
+  return async (url, options = {}) => {
+    const parsed = new URL(url)
+    const match = /^(\/workspace\/[^/]+)\/opencode2\/api\/session(?:\/([^/]+)(?:\/(.+))?)?$/.exec(parsed.pathname)
+    if (!match) return fetchImpl(url, options)
+    const [, workspace, sessionId, rest] = match
+    const base = `${workspace}/opencode/session`
+    const method = options.method ?? "GET"
+    const body = typeof options.body === "string" && options.body ? JSON.parse(options.body) : {}
+    if (!sessionId && method === "POST") {
+      const response = await fetchImpl(v1(url, base), { ...options, body: JSON.stringify({ title: body.title }) })
+      if (passFailure(response)) return response
+      const session = await json(response)
+      if (body.model && session?.id) models.set(session.id, body.model)
+      return Response.json({ data: session }, { status: response.status })
+    }
+    if (sessionId === "active") {
+      const response = await fetchImpl(v1(url, `${base}/status`), options)
+      if (passFailure(response)) return response
+      const statuses = (await json(response)) ?? {}
+      return Response.json({ data: Object.fromEntries(Object.entries(statuses).filter(([, status]) => status?.type === "busy" || status?.type === "retry").map(([id]) => [id, { type: "running" }])) })
+    }
+    const session = `${base}/${sessionId}`
+    if (!rest) {
+      const response = await fetchImpl(v1(url, session), options)
+      if (passFailure(response)) return response
+      const info = await json(response)
+      return Response.json({ data: { ...info, location: { directory: info?.directory ?? "/workspace" } } })
+    }
+    if (rest === "model") { models.set(decodeURIComponent(sessionId), body.model); return Response.json({ data: {} }) }
+    if (rest === "message") {
+      const limit = parsed.searchParams.get("limit")
+      const response = await fetchImpl(`${v1(url, `${session}/message`)}${limit ? `?limit=${limit}` : ""}`, options)
+      if (passFailure(response)) return response
+      const messages = (await json(response)) ?? []
+      return Response.json({ data: messages.map(v2Message).reverse(), cursor: {} })
+    }
+    if (rest === "prompt") {
+      const model = models.get(decodeURIComponent(sessionId))
+      const v1Body = {
+        parts: [{ type: "text", text: body.text }],
+        ...(body.id ? { messageID: body.id } : {}),
+        ...(model ? { model: { providerID: model.providerID, modelID: model.id } } : {}),
+        ...(model?.variant ? { variant: model.variant } : {}),
+      }
+      return fetchImpl(v1(url, `${session}/prompt_async`), { ...options, body: JSON.stringify(v1Body) })
+    }
+    if (rest === "interrupt") {
+      const response = await fetchImpl(v1(url, `${session}/abort`), options)
+      if (passFailure(response)) return response
+      return Response.json({ data: { interrupted: await json(response) } })
+    }
+    return fetchImpl(url, options)
+  }
+}
+const createDesktopAutomationRunner = (options) => createRunnerOn2({ ...options, fetchImpl: throughV2(options.fetchImpl) })
+const executeDesktopAutomation = (assignment, options) => executeAutomationOn2(assignment, { ...options, fetchImpl: throughV2(options.fetchImpl) })
+const executeDesktopRemoteSession = (assignment, options) => executeRemoteSessionOn2(assignment, { ...options, fetchImpl: throughV2(options.fetchImpl) })
 
 function runnerTokenFor(audience, organizationId = "org-1") {
   const payload = Buffer.from(JSON.stringify({
@@ -796,7 +873,8 @@ test("waking during an active run keeps its lease and starts no second claim loo
   await flushTasks()
   assert.equal(paths.filter((path) => path === "/v1/automation-runner/work").length, 1)
   assert.equal(paths.filter((path) => path.endsWith("/claim")).length, 1)
-  assert.ok([sessionPaths.get, sessionPaths.messages, sessionPaths.todo, sessionPaths.status]
+  // The 2.x engine has no todos: the snapshot reads the session, its messages and the running sessions.
+  assert.ok([sessionPaths.get, sessionPaths.messages, sessionPaths.status]
     .every((path) => paths.includes(path)), "snapshot endpoints did not start in parallel")
 
   // The wake joins the reconcile cycle that is already executing run-1 rather
@@ -1127,7 +1205,7 @@ test("desktop Automation execution creates a normal visible local OmniRush.ai th
       },
     },
   ])
-  for (const path of [sessionPaths.get, sessionPaths.messages, sessionPaths.todo, sessionPaths.status]) {
+  for (const path of [sessionPaths.get, sessionPaths.messages, sessionPaths.status]) {
     assert.equal(requests.filter((request) => request.path === path).length, 2)
   }
   assert.deepEqual(
@@ -1379,7 +1457,7 @@ test("cancellation during execution preserves the local thread and reaches a ter
   const abortRequest = localRequests.find((request) => request.path === sessionPaths.abort)
   assert.equal(abortRequest?.method, "POST")
   assert.equal(abortRequest?.authorization, "Bearer local-client-token")
-  assert.equal(abortRequest?.signal?.aborted, false)
+  assert.equal(abortRequest?.signal?.aborted ?? false, false)
 })
 
 test("an explicit assistant provider failure terminates immediately with its local thread", async () => {
@@ -1756,6 +1834,10 @@ test("a snapshot poll left hanging by a suspended machine still honors the assig
   // The timer can fire before the wall clock reaches the computed deadline.
   // Hold that clock still to exercise the abort source deterministically.
   t.mock.method(Date, "now", () => 1_000)
+  // The hanging fetches hold no timer (as in the app, whose event loop stays up): this one keeps the test's alive
+  // until the assignment's own timeout fires.
+  const keepAlive = setInterval(() => {}, 50)
+  t.after(() => clearInterval(keepAlive))
   const snapshotSignals = []
   const sessionPaths = opencodeSessionPaths("workspace-1", "session-1")
   const local = localExecutionRoutes(sessionPaths, (parsed, options) => {

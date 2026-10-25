@@ -48,7 +48,7 @@ describe("workspace session mutations", () => {
         }
         expect(request.headers.get("Authorization")).toBe("Bearer fixture-token");
         if (request.method === "DELETE") return Response.json(true);
-        if (engine === "v2") expect(await request.json()).toMatchObject({ location: { directory: "/existing" } });
+        expect(await request.json()).toMatchObject({ location: { directory: "/existing" } });
         return Response.json({ id: "ses_created", title: "New session", time: { created: 1, updated: 1 } });
       };
       try {
@@ -60,9 +60,10 @@ describe("workspace session mutations", () => {
         expect(await deleteRouteSession(endpoint, "ses_created")).toBe(true);
         expect(requests).toEqual([
           "GET /experimental/engine-v2-preview/status",
-          `POST /workspace/ws_existing/${engine === "v2" ? "opencode2/api/session" : "opencode/session"}`,
+          // Every engine route is the 2.x mount; the 1.x engine is gone.
+          "POST /workspace/ws_existing/opencode2/api/session",
           "GET /experimental/engine-v2-preview/status",
-          `DELETE /workspace/ws_existing/${engine === "v2" ? "opencode2/api/session" : "opencode/session"}/ses_created`,
+          "DELETE /workspace/ws_existing/opencode2/api/session/ses_created",
         ]);
       } finally {
         globalThis.fetch = originalFetch;

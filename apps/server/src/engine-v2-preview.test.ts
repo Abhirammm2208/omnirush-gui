@@ -7,7 +7,6 @@ import { join, resolve } from "node:path";
 import {
   createEngineV2Preview,
   mapRuntimeProvidersToV2Specs,
-  mapRuntimeMcpToV2,
   readEngineV2PreviewState,
   resolveInitialEngineV2PreviewState,
   writeEngineV2PreviewState,
@@ -16,7 +15,7 @@ import type { ServerConfig } from "./types.js";
 import { buildOmniRushV2Instructions, waitForOmniRushV2Skills } from "./opencode-v2-instructions.js";
 
 const realV2Binary = process.env.OMNIRUSH_OPENCODE2_BIN?.trim()
-  || join(resolve(import.meta.dir, "../../.."), "apps/desktop/resources/sidecars/opencode-x86_64-unknown-linux-gnu");
+  || join(resolve(import.meta.dir, "../../.."), "apps/desktop/resources/sidecars/opencode2-x86_64-unknown-linux-gnu");
 const realV2Test = existsSync(realV2Binary) ? test : test.skip;
 
 test("v2 app guidance fits the native entry limit and uses the current native tools", () => {
@@ -45,18 +44,6 @@ test("native plugin skills do not block workspace skill synchronization", async 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("maps enabled MCP transports without retaining unknown runtime fields", () => {
-  expect(mapRuntimeMcpToV2({ type: "remote", url: "https://example.test/mcp", oauth: false,
-    headers: { Authorization: "Bearer fixture", ignored: 3 }, timeout: 2000, enabled: true, privateMetadata: "omit" }))
-    .toEqual({ type: "remote", url: "https://example.test/mcp", oauth: false,
-      headers: { Authorization: "Bearer fixture" }, timeout: { startup: 2000, catalog: 2000, execution: 2000 } });
-  expect(mapRuntimeMcpToV2({ type: "local", command: ["node", "fixture.mjs"], environment: { FIXTURE: "value" } }))
-    .toEqual({ type: "local", command: ["node", "fixture.mjs"], environment: { FIXTURE: "value" } });
-  for (const value of [null, { type: "remote", url: "file:///secret" }, { type: "local", command: [] },
-    { type: "remote", url: "https://example.test/mcp", enabled: false },
-    { type: "remote", url: "https://example.test/mcp", disabled: true }]) expect(mapRuntimeMcpToV2(value)).toBeUndefined();
-});
-
 function testConfig(root: string): ServerConfig {
   return {
     host: "127.0.0.1",
@@ -77,24 +64,11 @@ function testConfig(root: string): ServerConfig {
   };
 }
 
-test("keeps persisted engine v2 preview state when the override is unset", () => {
-  const persisted = { enabled: true, chatRouting: false };
-  expect(resolveInitialEngineV2PreviewState({}, persisted)).toEqual(persisted);
-});
-
-test("enables engine v2 preview and chat routing when the override is 1", () => {
-  expect(resolveInitialEngineV2PreviewState(
-    { OMNIRUSH_ENGINE_V2_PREVIEW: "1" },
-    { enabled: false, chatRouting: false },
-  )).toEqual({ enabled: true, chatRouting: true });
-});
-
-test("keeps persisted engine v2 preview state for an invalid override", () => {
-  const persisted = { enabled: false, chatRouting: true };
-  expect(resolveInitialEngineV2PreviewState(
-    { OMNIRUSH_ENGINE_V2_PREVIEW: "invalid" },
-    persisted,
-  )).toEqual(persisted);
+test("the 2.x engine runs every chat, whatever an earlier preview setting said", () => {
+  expect(resolveInitialEngineV2PreviewState({}, { enabled: false, chatRouting: false }, false)).toEqual({ enabled: true, chatRouting: true });
+  expect(resolveInitialEngineV2PreviewState({ OMNIRUSH_ENGINE_V2_PREVIEW: "0" }, undefined, false)).toEqual({ enabled: true, chatRouting: true });
+  expect(resolveInitialEngineV2PreviewState({ OMNIRUSH_ENGINE_V2_PREVIEW: "sidecar" }, undefined, false)).toEqual({ enabled: true, chatRouting: false });
+  expect(resolveInitialEngineV2PreviewState({ OMNIRUSH_ENGINE_V2_PREVIEW: "sidecar" }, undefined, true)).toEqual({ enabled: true, chatRouting: true });
 });
 
 test("round trips enabled and chat routing state and defaults corrupt state", async () => {
@@ -111,18 +85,13 @@ test("round trips enabled and chat routing state and defaults corrupt state", as
   }
 });
 
-test("persists chat routing and includes it in preview status without starting the engine", async () => {
+test("the 2.x engine cannot be turned off", async () => {
   const root = await mkdtemp(join(tmpdir(), "omnirush-engine-v2-preview-"));
-  const config = testConfig(root);
-  const preview = createEngineV2Preview({ config });
+  const preview = createEngineV2Preview({ config: testConfig(root), deferStart: true });
   try {
-    expect(preview.status().chatRouting).toBe(false);
-    const status = await preview.setChatRouting(true);
-    expect(status.chatRouting).toBe(true);
-    expect(status.enabled).toBe(false);
-    expect(status.running).toBe(false);
-    expect(preview.connection()).toBeUndefined();
-    expect(readEngineV2PreviewState(config)).toEqual({ enabled: false, chatRouting: true });
+    expect(preview.status().enabled).toBe(true);
+    await expect(preview.setEnabled(false)).rejects.toThrow(/cannot be turned off/);
+    await expect(preview.setChatRouting(false)).rejects.toThrow(/cannot be turned off/);
   } finally {
     await preview.stop();
     await rm(root, { recursive: true, force: true });
@@ -159,7 +128,7 @@ realV2Test("removes a configured MCP from the real v2 engine before admission", 
         },
       },
     );
-    const configured = await request("/api/mcp/fixture", {
+    const configured = await request("/api/experimental/mcp/fixture", {
       method: "PUT",
       body: JSON.stringify({ config: { type: "remote", url: "https://example.invalid/mcp" } }),
     });

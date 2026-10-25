@@ -9,9 +9,8 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 
-import { desktopFetch } from "../../app/lib/desktop";
+import { createClientV2 } from "../../app/lib/opencode-v2-adapter";
 import {
   getOmniRushGatewayOrigin,
   readOmniRushGatewayDenToken,
@@ -22,7 +21,8 @@ import { isDesktopRuntime } from "../../app/utils";
 import { initialServerState, serverReducer } from "./server-provider-state";
 
 export function normalizeServerUrl(input: string): string | undefined {
-  return normalizeOmniRushServerUrl(input) ?? undefined;
+  // A saved 1.x engine mount moves to the 2.x one; the 1.x engine is gone.
+  return normalizeOmniRushServerUrl(input)?.replace(/\/opencode$/, "/opencode2") ?? undefined;
 }
 
 export function serverDisplayName(url: string): string {
@@ -47,7 +47,9 @@ function readStoredList(): string[] {
   try {
     const raw = window.localStorage.getItem("omnirush.server.list");
     const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
+    return Array.isArray(parsed)
+      ? parsed.flatMap((item) => typeof item === "string" ? [normalizeServerUrl(item) ?? item] : [])
+      : [];
   } catch {
     return [];
   }
@@ -81,15 +83,9 @@ export function buildOmniRushHealthHeaders(url: string): Record<string, string> 
 
 async function checkHealth(url: string): Promise<boolean> {
   if (!url) return false;
-  const headers = buildOmniRushHealthHeaders(url);
-  const client = createOpencodeClient({
-    baseUrl: url,
-    headers,
-    signal: AbortSignal.timeout(3000),
-    fetch: isDesktopRuntime() ? desktopFetch : undefined,
-  });
-  return client.global
-    .health()
+  const token = buildOmniRushHealthHeaders(url) ? readOmniRushToken() : undefined;
+  return createClientV2(url, undefined, { token }).global
+    .health({ signal: AbortSignal.timeout(3000) })
     .then((result) => result.data?.healthy === true)
     .catch(() => false);
 }
@@ -108,7 +104,7 @@ export function ServerProvider({ children, defaultUrl }: ServerProviderProps) {
     if (typeof window === "undefined") return;
 
     const gatewayOrigin = getOmniRushGatewayOrigin();
-    const fallback = normalizeServerUrl(gatewayOrigin ? `${gatewayOrigin}/opencode` : defaultUrl) ?? "";
+    const fallback = normalizeServerUrl(gatewayOrigin ? `${gatewayOrigin}/opencode2` : defaultUrl) ?? "";
 
     // Hosted web deployments served by omnirush.ai must reuse the OpenCode proxy
     // rather than any persisted localhost target.

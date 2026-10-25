@@ -17,7 +17,8 @@ import {
   mintCloudControlMcpToken,
   readDenSettings,
 } from "../../../app/lib/den";
-import { createClient, unwrap } from "../../../app/lib/opencode";
+import { unwrap } from "../../../app/lib/opencode";
+import { createClientV2 } from "../../../app/lib/opencode-v2-adapter";
 import { finishPerf, perfNow, recordPerfLog } from "../../../app/lib/perf-log";
 import {
   assertDesktopWebUrl,
@@ -394,9 +395,8 @@ export function createConnectionsStore(options: {
 
     const mountedBaseUrl =
       buildOmniRushWorkspaceBaseUrl(omnirushBaseUrl, await resolveOmniRushWorkspaceId()) ?? omnirushBaseUrl;
-    activeClient = createClient(`${mountedBaseUrl.replace(/\/+$/, "")}/opencode`, undefined, {
+    activeClient = createClientV2(`${mountedBaseUrl.replace(/\/+$/, "")}/opencode2`, undefined, {
       token,
-      mode: "omnirush",
     });
     options.setClient(activeClient);
     return activeClient;

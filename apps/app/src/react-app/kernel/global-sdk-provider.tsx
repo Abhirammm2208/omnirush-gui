@@ -8,12 +8,12 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import {
+import type {
   createOpencodeClient,
-  type Event,
+  Event,
 } from "@opencode-ai/sdk/v2/client";
 
-import { usePlatform } from "./platform";
+import { createClientV2 } from "../../app/lib/opencode-v2-adapter";
 import { useServer } from "./server-provider";
 
 type OpencodeClient = ReturnType<typeof createOpencodeClient>;
@@ -114,38 +114,22 @@ export async function runGlobalEventSubscription(input: GlobalEventSubscriptionR
 
 export function GlobalSDKProvider({ children }: GlobalSDKProviderProps) {
   const server = useServer();
-  const platform = usePlatform();
   const emitterRef = useRef<GlobalEventEmitter | null>(null);
   if (!emitterRef.current) {
     emitterRef.current = createEmitter();
   }
   const emitter = emitterRef.current;
 
-  const token = readOmniRushToken();
-  const headers =
-    token && server.url.includes("/opencode")
-      ? { Authorization: `Bearer ${token}` }
-      : undefined;
+  // The global client talks to the 2.x engine mount (`<server>/opencode2`).
+  const token = server.url.includes("/opencode") ? readOmniRushToken() || undefined : undefined;
 
-  const [client, setClient] = useState<OpencodeClient>(() =>
-    createOpencodeClient({
-      baseUrl: server.url,
-      headers,
-      fetch: platform.fetch,
-      throwOnError: true,
-    }),
-  );
+  const [client, setClient] = useState<OpencodeClient>(() => createClientV2(server.url, undefined, { token }));
 
   useEffect(() => {
-    setClient(
-      createOpencodeClient({
-        baseUrl: server.url,
-        headers,
-        fetch: platform.fetch,
-        throwOnError: true,
-      }),
-    );
-  }, [platform.fetch, server.url]);
+    setClient(createClientV2(server.url, undefined, { token }));
+    // token is re-read from local storage; rebuild only when the server URL changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server.url]);
 
   useEffect(() => {
     const baseUrl = server.url;
@@ -153,12 +137,7 @@ export function GlobalSDKProvider({ children }: GlobalSDKProviderProps) {
     if (!baseUrl || !isHealthy) return;
 
     const abort = new AbortController();
-    const eventClient = createOpencodeClient({
-      baseUrl,
-      headers,
-      signal: abort.signal,
-      fetch: platform.fetch,
-    });
+    const eventClient = createClientV2(baseUrl, undefined, { token });
 
     type Queued = { directory: string; payload: Event };
     let queue: Array<Queued | undefined> = [];
@@ -236,9 +215,9 @@ export function GlobalSDKProvider({ children }: GlobalSDKProviderProps) {
       if (timer) clearTimeout(timer);
       flush();
     };
-    // headers is re-derived from local storage; rerun only when server URL or health flips.
+    // token is re-read from local storage; rerun only when server URL or health flips.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emitter, platform.fetch, server.healthy, server.url]);
+  }, [emitter, server.healthy, server.url]);
 
   const value = useMemo<GlobalSDKContextValue>(
     () => ({

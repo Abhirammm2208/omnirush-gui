@@ -23,8 +23,8 @@ import { buildDiagnosticsBundleJson } from "@/app/lib/diagnostics-bundle";
 import { downloadTextAsFile } from "@/app/lib/download";
 import { canCreateWorkspaces } from "@/app/lib/workspace-creation-policy";
 import { useQueryClient } from "@tanstack/react-query";
-import { createClient, isPromptAdmissionUnknown, unwrap } from "@/app/lib/opencode";
-import { createClientV2, isOpencodeV2BaseUrl, V2_SESSION_ARCHIVE_UNAVAILABLE } from "@/app/lib/opencode-v2-adapter";
+import { isPromptAdmissionUnknown, unwrap } from "@/app/lib/opencode";
+import { createClientV2 } from "@/app/lib/opencode-v2-adapter";
 import { abortSessionSafe, forkSession, listCommands, revertSession, setSessionArchived, shellInSession, unrevertSession } from "@/app/lib/opencode-session";
 import { getNativeSessionMessages } from "@/app/lib/opencode-session-native";
 import { copySessionId } from "@/react-app/domains/session/sidebar/copy-session-id";
@@ -563,7 +563,8 @@ export function SessionRoute() {
     locationKey: location.key,
     navigationGeneration: routeNavigationRef.current.generation,
   };
-  const archiveDisabledReason = isOpencodeV2BaseUrl(opencodeBaseUrl) ? V2_SESSION_ARCHIVE_UNAVAILABLE : undefined;
+  // Archiving is the app's own flag on 2.x (the server keeps it): always available.
+  const archiveDisabledReason: string | undefined = undefined;
   // The dashboard is user-scoped while MCP servers are workspace-scoped: the
   // selected workspace's runtime is primary, and every other available one is
   // a per-tile fallback so tiles keep working when the selected workspace does
@@ -1776,11 +1777,10 @@ export function SessionRoute() {
     }
 
     const workspaceRoot = paneEndpoint.workspaceRoot;
-    const createEngineClient = isOpencodeV2BaseUrl(endpoint.opencodeBaseUrl) ? createClientV2 : createClient;
-    const workspaceOpencodeClient = createEngineClient(
+    const workspaceOpencodeClient = createClientV2(
       endpoint.opencodeBaseUrl,
       workspaceRoot || undefined,
-      { token: endpoint.token, mode: "omnirush" },
+      { token: endpoint.token },
     );
     const scopedSurface = {
       ...surfaceProps,
@@ -3400,10 +3400,10 @@ export function SessionRoute() {
         // OpenCode directory. Chat-first creation still needs a session for
         // its supplied prompt; ordinary creation lands on the New task state.
         const session = createdOnServer && sessionBaseUrl && sessionToken && (firstTaskPrompt || firstTaskAttachments.length > 0)
-          ? await createClient(
-              `${(buildOmniRushWorkspaceBaseUrl(sessionBaseUrl, targetWorkspaceId) ?? sessionBaseUrl).replace(/\/+$/, "")}/opencode`,
+          ? await createClientV2(
+              `${(buildOmniRushWorkspaceBaseUrl(sessionBaseUrl, targetWorkspaceId) ?? sessionBaseUrl).replace(/\/+$/, "")}/opencode2`,
               workspacePath || undefined,
-              { token: sessionToken, mode: "omnirush" },
+              { token: sessionToken },
             ).session.create({ directory: workspacePath || undefined })
               .then((result) => unwrap(result))
           : null;
@@ -3469,9 +3469,8 @@ export function SessionRoute() {
     const taskWorkspace = created.workspace;
     await refreshRouteState();
     void queryClient.invalidateQueries({ queryKey: workspaceTasksQueryKey(workspaceId) });
-    const opencodeUrl = `${(buildOmniRushWorkspaceBaseUrl(baseUrl, taskWorkspace.id) ?? baseUrl).replace(/\/+$/, "")}/opencode`;
-    const createEngineClient = isOpencodeV2BaseUrl(opencodeUrl) ? createClientV2 : createClient;
-    const engine = createEngineClient(opencodeUrl, taskWorkspace.path || undefined, { token, mode: "omnirush" });
+    const opencodeUrl = `${(buildOmniRushWorkspaceBaseUrl(baseUrl, taskWorkspace.id) ?? baseUrl).replace(/\/+$/, "")}/opencode2`;
+    const engine = createClientV2(opencodeUrl, taskWorkspace.path || undefined, { token });
     const session = unwrap(await engine.session.create({ directory: taskWorkspace.path || undefined }));
     const system = await buildOmniRushSessionSystemContext(client, {
       workspaceId: taskWorkspace.id,

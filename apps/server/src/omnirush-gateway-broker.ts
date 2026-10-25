@@ -65,6 +65,10 @@ export type SubagentModelFallbackEvent = {
 };
 
 type BrokerOptions = {
+  /** Every model response forwarded for a chat (the 2.x engine's quota wrap, engine-v2-budget-wrap.ts). */
+  onModelResponse?: (sessionId: string, headers: Headers) => void;
+  /** Whether a chat's compaction is an accepted wrap: the gateway then holds it as the wrap. */
+  contextWrap?: (sessionId: string) => boolean;
   credentials?: OmniRushGatewayCredentials;
   engineToken?: string;
   /** Durable model pins; production supplies the runtime-local state file. */
@@ -1402,6 +1406,9 @@ export class OmniRushGatewayBroker {
   })).then(async (response) => ({ status: response.status, body: await response.json().catch(() => null) })), timeoutMs ? { timeoutMs } : {});
   }
 
+  private readonly onModelResponse?: BrokerOptions["onModelResponse"];
+  private readonly contextWrap?: BrokerOptions["contextWrap"];
+
   constructor(options: BrokerOptions) {
     const gatewayUrl = options.credentials ? normalizedGatewayUrl(options.credentials.gatewayUrl) : null;
     this.state = gatewayUrl && options.credentials?.accessToken && options.credentials.refreshToken
@@ -1412,6 +1419,8 @@ export class OmniRushGatewayBroker {
         }
       : null;
     this.engineToken = options.engineToken?.trim() ?? "";
+    this.onModelResponse = options.onModelResponse;
+    this.contextWrap = options.contextWrap;
     this.sessionModelsFile = options.sessionModelsFile;
     if (this.sessionModelsFile) {
       try {
@@ -1502,6 +1511,13 @@ export class OmniRushGatewayBroker {
       return Response.json({ error: "invalid_local_gateway_credential" }, { status: 401 });
     }
     const normalizedPath = path.replace(/^\/+/, "");
+    // The 2.x engine names its session in x-session-id on every request (the CLI's token proxy maps it the same way).
+    const stockSession = request.headers.get("x-session-id");
+    if (!request.headers.has("x-omnirush-session-id") && stockSession && /^ses_[A-Za-z0-9]{1,64}$/.test(stockSession)) {
+      const headers = new Headers(request.headers);
+      headers.set("x-omnirush-session-id", stockSession);
+      request = new Request(request, { headers });
+    }
     const allowed = (request.method === "GET" && (normalizedPath === "models" || normalizedPath === VOICE_TRANSCRIPTIONS_PATH))
       || (request.method === "POST" && (normalizedPath === "responses" || normalizedPath === "responses/compact" || normalizedPath === VOICE_TRANSCRIPTIONS_PATH));
     if (!allowed) return Response.json({ error: "unsupported_gateway_path" }, { status: 404 });
@@ -1564,6 +1580,10 @@ export class OmniRushGatewayBroker {
       response = await this.subagentFallback(request, normalizedPath, body, response, requestId);
     }
     await this.noteUpdateSignals(response, true);
+    const chat = request.headers.get("x-omnirush-session-id");
+    if (chat && this.onModelResponse) {
+      try { this.onModelResponse(chat, response.headers); } catch { /* the wrap offer is best effort */ }
+    }
     const contentType = response.headers.get("content-type") ?? "";
     // Sign-in failures keep their own answer above; every other gateway
     // refusal reaches the user as readable copy instead of a bare code.
@@ -2210,6 +2230,9 @@ export class OmniRushGatewayBroker {
       const value = request.headers.get(name);
       if (value) headers.set(name, value);
     }
+    // The 2.x engine's compaction of a chat whose wrap was accepted (its session plugin names the request's kind).
+    const wrapSession = request.headers.get("x-omnirush-session-id");
+    if (wrapSession && request.headers.get("x-omnirush-request-kind") === "compaction" && this.contextWrap?.(wrapSession)) headers.set("x-omnirush-context-wrap", "1");
     // A box (sandbox) chat's request: the gateway judges its model in the box mode.
     if (this.boxRequest(request)) headers.set(BOX_HEADER, "1");
     // Strict sessions: every request of a chat says so (the gateway binds it itself if ours failed).

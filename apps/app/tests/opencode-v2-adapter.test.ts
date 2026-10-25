@@ -660,27 +660,19 @@ describe("OpenCode v2 event translation", () => {
 });
 
 describe("OpenCode v2 client compatibility", () => {
-  test.each([0, 1_788_548_737_221])("rejects archived=%i without reading, renaming, or deleting the session", async (archived) => {
+  test.each([0, 1_788_548_737_221])("archives (archived=%i) through the server's own flag on the session PATCH", async (archived) => {
     const originalFetch = globalThis.fetch;
-    const requests: Request[] = [];
+    const sent: Array<{ method: string; path: string; body: unknown }> = [];
     globalThis.fetch = async (input, init) => {
-      requests.push(input instanceof Request ? input : new Request(input, init));
-      return jsonResponse({ data: { id: "ses_archive", title: "Keep this session", time: { created: 1 } } });
+      const request = input instanceof Request ? input : new Request(input, init);
+      sent.push({ method: request.method, path: new URL(request.url).pathname, body: request.method === "PATCH" ? await request.json() : null });
+      return jsonResponse({ data: { id: "ses_archive", title: "Keep", time: { created: 1, ...(archived ? { archived } : {}) } } });
     };
     try {
       const client = createClientV2("http://opencode.test/opencode2", "/workspace", {});
-      for (const title of [undefined, "Do not partially rename"]) {
-        const parameters = { sessionID: "ses_archive", title, time: { archived } };
-        const result = await client.session.update(parameters);
-        expect(result.response.status).toBe(501);
-        expect(result.data).toBeUndefined();
-        expect(result.error).toMatchObject({
-          name: "UnsupportedInV2Preview", operation: "session.archive",
-          message: "Archiving and unarchiving are not available in the OpenCode v2 preview.",
-        });
-        await expect(client.session.update(parameters, { throwOnError: true })).rejects.toThrow("Archiving and unarchiving are not available");
-      }
-      expect(requests).toEqual([]);
+      const result = await client.session.update({ sessionID: "ses_archive", title: "Renamed", time: { archived } });
+      expect(result.data?.time.archived).toBe(archived || undefined);
+      expect(sent[0]).toEqual({ method: "PATCH", path: "/opencode2/api/session/ses_archive", body: { title: "Renamed", archived: archived || null } });
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -712,10 +704,12 @@ describe("OpenCode v2 client compatibility", () => {
     const originalFetch = globalThis.fetch;
     const notice = "New skills are available in addition to those previously listed.";
     globalThis.fetch = async () => jsonResponse({ data: [
-      { id: "msg_system", type: "system", text: notice, time: { created: 1 } },
-      { id: "msg_synthetic", type: "synthetic", text: "Internal context", time: { created: 2 } },
-      { id: "msg_user", type: "user", text: notice, time: { created: 3 } },
+      { id: "msg_idle", type: "idle", outcome: "succeeded", time: { created: 6 } },
+      { id: "msg_switch", type: "model-switched", model: { id: "m", providerID: "p" }, time: { created: 5 } },
       { id: "msg_answer", type: "assistant", content: [{ type: "text", text: "The current report code." }], time: { created: 4 } },
+      { id: "msg_user", type: "user", text: notice, time: { created: 3 } },
+      { id: "msg_synthetic", type: "synthetic", text: "Internal context", time: { created: 2 } },
+      { id: "msg_system", type: "system", text: notice, time: { created: 1 } },
     ] });
     try {
       const client = createClientV2("http://opencode.test/opencode2", "/workspace", {});
@@ -882,7 +876,7 @@ describe("OpenCode v2 client compatibility", () => {
     globalThis.fetch = async () => jsonResponse({ data: states.map((state) => ({
       id: "msg_parent", type: "assistant", time: { created: 5 },
       content: [{ type: "tool", id: "call_child", name, state, time: { created: 10, ran: 20, completed: 30 } }],
-    })) });
+    })).reverse() });
     try {
       const client = createClientV2("http://opencode.test/opencode2", "/workspace", {});
       const result = await client.session.messages({ sessionID: "ses_parent" });
@@ -1004,7 +998,7 @@ describe("OpenCode v2 client compatibility", () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
       const request = input instanceof Request ? input : new Request(input, init);
-      if (request.method === "GET" && request.url.endsWith("/api/session/ses_failed/message")) {
+      if (request.method === "GET" && new URL(request.url).pathname.endsWith("/api/session/ses_failed/message")) {
         return jsonResponse({ data: [{
           id: "msg_failed",
           type: "assistant",
@@ -1064,7 +1058,7 @@ describe("OpenCode v2 client compatibility", () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
       const request = input instanceof Request ? input : new Request(input, init);
-      if (request.method === "GET" && request.url.endsWith("/api/session/ses_tool/message")) {
+      if (request.method === "GET" && new URL(request.url).pathname.endsWith("/api/session/ses_tool/message")) {
         return jsonResponse({ data: [capturedV2ToolMessage] });
       }
       throw new Error(`Unexpected request: ${request.method} ${request.url}`);
@@ -1209,8 +1203,11 @@ describe("OpenCode v2 client compatibility", () => {
         ["GET", "/workspace/owned/opencode2/api/event"], ["GET", "/workspace/owned/opencode2/api/session/ses_fork"],
       ]);
       expect(requests.every((request) => request.headers.get("Authorization") === "Bearer fixture-token")).toBe(true);
-      expect((await client.session.fork({ sessionID: "ses_source" })).response.status).toBe(501);
-      expect(requests).toHaveLength(2);
+      const fork = await client.session.fork({ sessionID: "ses_source", messageID: "msg_source" });
+      expect(fork.data?.id).toBe("ses_fork");
+      expect(fork.data?.parentID).toBeUndefined();
+      expect([requests[2]?.method, new URL(requests[2]?.url ?? "").pathname]).toEqual(["POST", "/workspace/owned/opencode2/api/session/ses_source/fork"]);
+      expect(await requests[2]?.json()).toEqual({ before: "msg_source" });
     } finally { globalThis.fetch = originalFetch; }
   });
 
@@ -1448,6 +1445,27 @@ describe("OpenCode v2 client compatibility", () => {
     }
   });
 
+  test("sends attachments as the engine's files", async () => {
+    const originalFetch = globalThis.fetch;
+    let sent: unknown = null;
+    globalThis.fetch = async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      if (request.url.endsWith("/prompt")) sent = await request.json();
+      return jsonResponse({ data: {} });
+    };
+    try {
+      const client = createClientV2("http://opencode.test/opencode2", "/workspace", {});
+      await client.session.promptAsync({
+        sessionID: "ses_files",
+        model: { providerID: "omnirush", modelID: "gpt-6-astra" },
+        parts: [{ type: "text", text: "look" }, { type: "file", mime: "image/png", url: "data:image/png;base64,AA==", filename: "a.png" } as never],
+      });
+      expect(sent).toEqual({ text: "look", files: [{ uri: "data:image/png;base64,AA==", name: "a.png" }] });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test.each(["model", "prompt"])("propagates network rejection from %s without fabricating success", async (endpoint) => {
     const originalFetch = globalThis.fetch;
     const failure = new TypeError("network unavailable");
@@ -1585,7 +1603,7 @@ describe("OpenCode v2 client compatibility", () => {
       });
       expect(reply.error).toBeUndefined();
       expect(reply.response.status).toBe(204);
-      expect(replyBodies).toEqual([{ reply: "always" }, { reply: "once" }]);
+      expect(replyBodies).toEqual([{ decision: "always" }, { decision: "once" }]);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -1647,22 +1665,22 @@ describe("v2 question forms", () => {
 
   test("an interaction client can answer a live form it never listed, preserving values and custom text", async () => {
     const originalFetch = globalThis.fetch;
-    const writes: { path: string; body: unknown }[] = [];
+    const writes: { method: string; path: string; body: unknown }[] = [];
     globalThis.fetch = async (input, init) => {
       const request = input instanceof Request ? input : new Request(input, init);
       const path = new URL(request.url).pathname;
-      if (request.method === "GET" && path.endsWith("/api/form/request")) return Response.json({ data: [form] });
-      writes.push({ path, body: request.body ? await request.json() : null });
+      if (request.method === "GET" && path.endsWith("/api/form")) return Response.json({ data: [form] });
+      writes.push({ method: request.method, path, body: request.body ? await request.json() : null });
       return new Response(null, { status: 204 });
     };
     try {
       const client = createClientV2("http://owner.test/opencode2", "/workspace", {});
       expect((await client.question.reply({ requestID: form.id, answers: [["Summary"], ["Facts", "Custom section"]] })).data).toBe(true);
-      expect(writes).toEqual([{ path: "/opencode2/api/session/ses_side/form/frm_choice/reply", body: {
+      expect(writes).toEqual([{ method: "POST", path: "/opencode2/api/session/ses_side/form/frm_choice/reply", body: {
         answer: { q0: "summary_value", q1: ["facts_value", "Custom section"] },
       } }]);
       expect((await client.question.reject({ requestID: form.id })).data).toBe(true);
-      expect(writes.at(-1)?.path).toBe("/opencode2/api/session/ses_side/form/frm_choice/cancel");
+      expect(writes.at(-1)).toEqual({ method: "DELETE", path: "/opencode2/api/session/ses_side/form/frm_choice", body: null });
     } finally { globalThis.fetch = originalFetch; }
   });
 
@@ -1704,11 +1722,226 @@ describe("v2 question forms", () => {
         system: "Main conversation reference: ses_main", parts: [{ type: "text", text: "What is happening?" }] };
       expect((await client.session.promptAsync(parameters)).response.status).toBe(204);
       expect(requests.map((item) => item.method)).toEqual(["POST", "PUT", "POST"]);
-      expect(requests[1]).toMatchObject({ path: "/opencode2/api/session/ses_side/instructions/entries/omnirush-context", body: { value: parameters.system } });
+      expect(requests[1]).toMatchObject({ path: "/opencode2/api/experimental/session/ses_side/instructions/entries/omnirush-context", body: { value: parameters.system } });
       expect(requests[2]?.body).toEqual({ text: "What is happening?" });
+      requests.length = 0;
+      await client.session.promptAsync({ ...parameters, messageID: "msg_0123456789abUIdraft00000" });
+      expect(requests[2]?.body).toEqual({ text: "What is happening?", id: "msg_0123456789abUIdraft00000" });
       requests.length = 0; status = 503;
       expect((await client.session.promptAsync(parameters)).response.status).toBe(503);
       expect(requests.map((item) => item.method)).toEqual(["POST", "PUT"]);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+});
+
+describe("OpenCode 2.0.32 routes", () => {
+  // Shapes captured from a stock 2.0.32 `opencode serve`.
+  const session = {
+    id: "ses_main", projectID: "project", title: "Main", cost: 0, location: { directory: "/workspace" },
+    time: { created: 1, updated: 2 }, revert: { messageID: "msg_user", snapshot: "abc", files: [] },
+  };
+
+  async function withRoutes(
+    handle: (request: Request, path: string) => Response | Promise<Response>,
+    run: (client: ReturnType<typeof createClientV2>, calls: { method: string; path: string; body: unknown }[]) => Promise<void>,
+  ) {
+    const originalFetch = globalThis.fetch;
+    const calls: { method: string; path: string; body: unknown }[] = [];
+    globalThis.fetch = async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      const path = url.pathname.replace("/opencode2", "") + url.search;
+      calls.push({ method: request.method, path, body: request.body ? await request.clone().json() : null });
+      return handle(request, path);
+    };
+    try { await run(createClientV2("http://owner.test/opencode2", "/workspace", {}), calls); } finally { globalThis.fetch = originalFetch; }
+  }
+
+  test("health reads /api/info and rename patches the session then rereads it", async () => {
+    await withRoutes((request, path) => path === "/api/info"
+      ? Response.json({ version: "2.0.32", pid: 1, urls: [], paths: { tmp: "/tmp" } })
+      : request.method === "PATCH" ? new Response(null, { status: 204 }) : Response.json({ data: { ...session, title: "Renamed" } }),
+    async (client, calls) => {
+      expect((await client.global.health()).data).toEqual({ healthy: true, version: "2.0.32" });
+      const renamed = await client.session.update({ sessionID: "ses_main", title: "Renamed" });
+      expect(renamed.data?.title).toBe("Renamed");
+      expect(renamed.data?.revert).toEqual({ messageID: "msg_user", snapshot: "abc" });
+      expect(calls.slice(1)).toEqual([
+        { method: "PATCH", path: "/api/session/ses_main", body: { title: "Renamed" } },
+        { method: "GET", path: "/api/session/ses_main", body: null },
+      ]);
+    });
+  });
+
+  test("revert stages without committing, unrevert clears, and compact, shell and command use native routes", async () => {
+    await withRoutes((request, path) => {
+      if (path.endsWith("/revert/stage")) return Response.json({ data: session.revert });
+      if (path.endsWith("/compact")) return Response.json({ data: { id: "msg_compact", type: "compaction" } });
+      if (request.method === "GET") return Response.json({ data: session });
+      return new Response(null, { status: 204 });
+    }, async (client, calls) => {
+      expect((await client.session.revert({ sessionID: "ses_main", messageID: "msg_user", partID: "p" })).data?.revert?.messageID).toBe("msg_user");
+      expect((await client.session.unrevert({ sessionID: "ses_main" })).data?.id).toBe("ses_main");
+      expect((await client.session.summarize({ sessionID: "ses_main", providerID: "mock", modelID: "m1" })).data).toBe(true);
+      expect((await client.session.shell({ sessionID: "ses_main", command: "echo hi", agent: "build" })).error).toBeUndefined();
+      expect((await client.session.command({ sessionID: "ses_main", command: "init", arguments: "focus", model: "mock/m1" })).error).toBeUndefined();
+      expect(calls).toEqual([
+        { method: "POST", path: "/api/session/ses_main/revert/stage", body: { messageID: "msg_user" } },
+        { method: "GET", path: "/api/session/ses_main", body: null },
+        { method: "DELETE", path: "/api/session/ses_main/revert", body: null },
+        { method: "GET", path: "/api/session/ses_main", body: null },
+        { method: "POST", path: "/api/session/ses_main/compact", body: {} },
+        { method: "POST", path: "/api/session/ses_main/shell", body: { command: "echo hi" } },
+        { method: "POST", path: "/api/session/ses_main/model", body: { model: { providerID: "mock", id: "m1" } } },
+        { method: "POST", path: "/api/session/ses_main/command", body: { name: "init", text: "focus" } },
+      ]);
+    });
+  });
+
+  test("a failed native op stays a failure", async () => {
+    await withRoutes(() => Response.json({ message: "busy" }, { status: 409 }), async (client, calls) => {
+      expect((await client.session.revert({ sessionID: "ses_main", messageID: "msg_user" })).response.status).toBe(409);
+      expect((await client.session.command({ sessionID: "ses_main", command: "init", model: "mock/m1" })).response.status).toBe(409);
+      expect(calls.map((call) => call.path)).toEqual(["/api/session/ses_main/revert/stage", "/api/session/ses_main/model"]);
+    });
+  });
+
+  test("history pages newest first through cursors and returns the latest messages oldest first", async () => {
+    const message = (n: number) => ({ id: `msg_${n}`, type: "user", text: `m${n}`, time: { created: n } });
+    await withRoutes((_request, path) => {
+      const cursor = new URL(`http://x${path}`).searchParams.get("cursor");
+      const start = cursor ? Number(cursor) : 250;
+      const limit = Number(new URL(`http://x${path}`).searchParams.get("limit"));
+      const data = Array.from({ length: Math.min(limit, start) }, (_, index) => start - index === 249
+        ? { id: "msg_idle", type: "idle", outcome: "succeeded", time: { created: 249 } } : message(start - index));
+      return Response.json({ data, cursor: { next: String(start - data.length) } });
+    }, async (client, calls) => {
+      const all = await client.session.messages({ sessionID: "ses_main" });
+      expect(all.data?.map((item) => item.info.id).slice(0, 2)).toEqual(["msg_1", "msg_2"]);
+      expect(all.data).toHaveLength(249);
+      expect(calls.map((call) => call.path)).toEqual([
+        "/api/session/ses_main/message?limit=200&order=desc",
+        "/api/session/ses_main/message?limit=200&cursor=50",
+      ]);
+      calls.length = 0;
+      const latest = await client.session.messages({ sessionID: "ses_main", limit: 3 });
+      expect(latest.data?.map((item) => item.info.id)).toEqual(["msg_247", "msg_248", "msg_250"]);
+      expect(calls.map((call) => call.path)).toEqual([
+        "/api/session/ses_main/message?limit=3&order=desc",
+        "/api/session/ses_main/message?limit=1&cursor=247",
+      ]);
+    });
+  });
+
+  test("a user shell message renders as one bash card and its synthetic notice stays hidden", async () => {
+    await withRoutes(() => Response.json({ data: [
+      { id: "msg_notice", type: "synthetic", text: "<shell id=\"sh_1\" state=\"completed\" command=\"echo hi\">\nhi\n</shell>",
+        metadata: { source: "shell", shellID: "sh_1" }, time: { created: 3 } },
+      { id: "msg_shell", type: "shell", shellID: "sh_1", command: "echo hi", status: "exited", exit: 0,
+        output: { output: "hi\n", cursor: 3, size: 3, truncated: false }, time: { created: 2, completed: 3 } },
+    ] }), async (client) => {
+      const result = await client.session.messages({ sessionID: "ses_main" });
+      expect(result.data).toHaveLength(1);
+      expect(result.data?.[0]?.info.role).toBe("assistant");
+      expect(result.data?.[0]?.parts).toMatchObject([{ type: "tool", tool: "bash", callID: "sh_1",
+        state: { status: "completed", input: { command: "echo hi" }, output: "hi\n" } }]);
+    });
+  });
+
+  test("revert events move the session cursor", () => {
+    const state = createV2EventTranslationState();
+    expect(translateV2Event({ type: "session.revert.staged", data: { sessionID: "ses_main", revert: session.revert } }, state))
+      .toEqual([{ type: "session.updated", properties: { info: { id: "ses_main", revert: { messageID: "msg_user" } } } }]);
+    for (const type of ["session.revert.cleared", "session.revert.committed"]) {
+      expect(translateV2Event({ type, data: { sessionID: "ses_main", to: "msg_user" } }, state))
+        .toEqual([{ type: "session.updated", properties: { info: { id: "ses_main" } } }]);
+    }
+    expect(translateV2Event({ type: "permission.replied", data: { sessionID: "ses_main", requestID: "per_1", decision: "always" } }, state))
+      .toEqual([{ type: "permission.replied", properties: { sessionID: "ses_main", requestID: "per_1", reply: "always" } }]);
+  });
+
+  test.each([
+    ["read", { path: "a.py" }, "read", { filePath: "a.py", path: "a.py" }],
+    ["write", { path: "b.txt", content: "x" }, "write", { filePath: "b.txt", path: "b.txt", content: "x" }],
+    ["edit", { path: "a.py", oldString: "1", newString: "2" }, "edit", { filePath: "a.py", path: "a.py" }],
+    ["skill", { id: "pdf" }, "skill", { name: "pdf", id: "pdf" }],
+    ["patch", { patchText: "*** Begin Patch" }, "apply_patch", { patchText: "*** Begin Patch" }],
+    ["websearch", { query: "news" }, "websearch", { query: "news" }],
+  ])("native %s calls render with the card's field names", (name, input, tool, expected) => {
+    const state = createV2EventTranslationState();
+    const identity = { sessionID: "ses_main", assistantMessageID: "msg_a", id: "call_1" };
+    translateV2Event({ type: "session.tool.input.started", data: { ...identity, name } }, state);
+    expect(translateV2Event({ type: "session.tool.called", created: 1, data: { ...identity, input } }, state))
+      .toMatchObject([{ properties: { part: { tool, state: { status: "running", input: expected } } } }]);
+    expect(input).not.toHaveProperty("filePath");
+  });
+});
+
+test("MCP status from the 2.x engine reads as the 1.x status map", async () => {
+  const { v2McpStatusMap } = await import("../src/app/lib/opencode-v2-adapter");
+  expect(v2McpStatusMap({ data: [{ name: "memory", status: { status: "connected" } }, { name: "gh", status: { status: "failed", error: "boom" } }, { name: 3 }] }))
+    .toEqual({ memory: { status: "connected" }, gh: { status: "failed", error: "boom" } });
+  expect(v2McpStatusMap(null)).toEqual({});
+});
+
+describe("OpenCode 2.0.32 workspace reads", () => {
+  test("agents, commands, files, vcs, projects and diffs read native routes in the 1.x shapes", async () => {
+    const originalFetch = globalThis.fetch;
+    const paths: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      const path = url.pathname.replace("/opencode2", "") + url.search;
+      paths.push(`${request.method} ${path}`);
+      if (url.pathname.endsWith("/api/agent")) return Response.json({ data: [
+        { id: "build", name: "Build", mode: "primary", hidden: false, permissions: [], request: {}, description: "Default", model: { id: "m1", providerID: "mock" } },
+        { id: "compaction", name: "Compaction", mode: "primary", hidden: true, permissions: [], request: {} },
+      ] });
+      if (url.pathname.endsWith("/api/command")) return Response.json({ data: [{ name: "init" }] });
+      if (url.pathname.endsWith("/api/fs/find")) return Response.json({ data: [{ path: "/", type: "directory" }, { path: "src/", type: "directory" }, { path: "src/a.ts", type: "file" }] });
+      if (url.pathname.endsWith("/api/vcs")) return Response.json({ data: { provider: "git", branch: { current: "feat", default: "main" } } });
+      if (url.pathname.endsWith("/api/vcs/diff")) return Response.json({ data: [{ file: "a.ts", patch: "p", additions: 1, deletions: 0, status: "modified" }] });
+      if (url.pathname.endsWith("/api/project")) return Response.json([{ id: "prj", canonical: "/workspace", time: { created: 1, updated: 1, active: 1 }, sandboxes: [] }]);
+      if (url.pathname.endsWith("/api/location")) return Response.json({ directory: "/workspace/sub", project: { id: "prj", directory: "/workspace", canonical: "/workspace" } });
+      if (url.pathname.endsWith("/diff")) return Response.json({ data: [{ file: "b.ts", patch: "q", additions: 0, deletions: 1, status: "deleted" }] });
+      throw new Error(`Unexpected request: ${request.method} ${path}`);
+    };
+    try {
+      const client = createClientV2("http://owner.test/opencode2", "/workspace", {});
+      expect((await client.app.agents()).data).toEqual([
+        { name: "build", mode: "primary", hidden: false, permission: [], options: {}, description: "Default", model: { providerID: "mock", modelID: "m1" } },
+        { name: "compaction", mode: "primary", hidden: true, permission: [], options: {} },
+      ]);
+      expect((await client.command.list()).data).toEqual([{ name: "init", template: "", hints: [] }]);
+      expect((await client.find.files({ query: "a", dirs: "true", limit: 50 })).data).toEqual(["src/", "src/a.ts"]);
+      expect((await client.vcs.get()).data).toEqual({ branch: "feat", default_branch: "main" });
+      expect((await client.vcs.diff({ mode: "git" })).data).toMatchObject([{ file: "a.ts", status: "modified" }]);
+      expect((await client.project.list()).data).toMatchObject([{ id: "prj", worktree: "/workspace" }]);
+      expect((await client.project.current()).data).toMatchObject({ id: "prj", worktree: "/workspace" });
+      expect((await client.path.get()).data).toEqual({ home: "", state: "", config: "", worktree: "/workspace", directory: "/workspace/sub" });
+      expect((await client.session.diff({ sessionID: "ses_main", messageID: "msg_user" })).data).toMatchObject([{ file: "b.ts" }]);
+      expect((await client.lsp.status()).data).toEqual([]);
+      expect((await client.provider.auth()).data).toEqual({});
+      expect(paths).toEqual([
+        "GET /api/agent", "GET /api/command", "GET /api/fs/find?query=a&limit=50", "GET /api/vcs",
+        "GET /api/vcs/diff?mode=working", "GET /api/project", "GET /api/location", "GET /api/location",
+        "GET /api/session/ses_main/diff?from=msg_user",
+      ]);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  test("1.x calls the adapter does not port fail locally and never reach the engine", async () => {
+    const originalFetch = globalThis.fetch;
+    let reached = 0;
+    globalThis.fetch = async () => { reached += 1; return new Response(null, { status: 204 }); };
+    try {
+      const client = createClientV2("http://owner.test/workspace/w/opencode2", "/workspace", {});
+      const update = await client.config.update({ config: {} });
+      expect(update.response?.status).toBe(501);
+      expect(update.error).toMatchObject({ name: "UnsupportedInV2", message: "Not available on the OpenCode 2.x engine: /config" });
+      expect((await client.mcp.connect({ name: "x" })).response?.status).toBe(501);
+      expect((await client.instance.dispose()).response?.status).toBe(501);
+      expect(reached).toBe(0);
     } finally { globalThis.fetch = originalFetch; }
   });
 });
