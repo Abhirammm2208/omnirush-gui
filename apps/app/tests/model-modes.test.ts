@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
+import { getReactQueryClient } from "../src/react-app/infra/query-client";
 
 import { modeSwitchNote as sharedNote } from "../../server/src/model-modes/model-modes.mjs";
-import { chatModeNote, fixedModelNote, modeAllowsModel, modeFallbackModel, modeSwitchNote, newChatAllowsModel } from "../src/react-app/domains/session/surface/model-modes";
+import { chatModeNote, chatStarted, fixedModelNote, modeAllowsModel, modeFallbackModel, modeSwitchNote, newChatAllowsModel } from "../src/react-app/domains/session/surface/model-modes";
 
 // As GET /omnirush/subagent-model lists them: `modes` normalized by the server.
 const MODELS = [
@@ -37,4 +38,25 @@ test("a new chat in a sandbox project may start on a model that runs only on thi
   expect(modeFallbackModel(MODELS, "native", ref("boxonly-x"))).toEqual(ref("gpt-6-astra"));
   expect(fixedModelNote(MODELS, ref("kimi-k3.1-pro"), ref("gpt-6-astra"))).toBe("This chat runs on Kimi K3.1 Pro. Start a new chat to use GPT 6 Astra.");
   expect(chatModeNote(MODELS, "native", ref("boxonly-x"))).toBe("This chat runs on Box Only X, which isn't available outside the sandbox. Start a new chat.");
+});
+
+test("a chat with a prompt in the engine's messages is started, marked here or not", () => {
+  const store = new Map<string, string>();
+  const host = globalThis as { window?: unknown };
+  const before = host.window;
+  host.window = { localStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) } };
+  try {
+    const cache = getReactQueryClient();
+    expect(chatStarted("ses_old")).toBe(false);
+    cache.setQueryData(["react-session-transcript", "ws", "ses_old"], [{ role: "user" }, { role: "assistant" }]);
+    expect(chatStarted("ses_old")).toBe(true);
+    cache.setQueryData(["react-session-snapshot", "ws", "ses_snap"], { messages: [{ info: { role: "user" } }] });
+    expect(chatStarted("ses_snap")).toBe(true);
+    cache.setQueryData(["react-session-transcript", "ws", "ses_empty"], []);
+    expect(chatStarted("ses_empty")).toBe(false);
+    store.set("omnirush.sessionModelFixed", JSON.stringify(["ses_marked"]));
+    expect(chatStarted("ses_marked")).toBe(true);
+  } finally {
+    host.window = before;
+  }
 });
