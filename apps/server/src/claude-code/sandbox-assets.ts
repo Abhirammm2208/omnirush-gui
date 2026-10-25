@@ -1,7 +1,7 @@
 // Embedded so the compiled desktop server and the CLI ship exactly the same runner.
 export const SDK_VERSION = "0.3.306";
 export const CLAUDE_VERSION = "2.1.306";
-export const IMAGE = `omnirush-claude-sdk:${SDK_VERSION}-3`;
+export const IMAGE = `omnirush-claude-sdk:${SDK_VERSION}-4`;
 /** The model baked into the runtime image's policy file; a session on another model replaces that file before its base checkpoint. */
 export const MODEL = "claude-opus-5-5";
 /** A Claude catalog id (claude-<name>), the only shape a session may pin. */
