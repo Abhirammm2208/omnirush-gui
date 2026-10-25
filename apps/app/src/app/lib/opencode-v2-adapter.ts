@@ -1659,11 +1659,18 @@ export function createClientV2(
         .filter((part) => part.type === "text" && typeof part.text === "string")
         .map((part) => typeof part.text === "string" ? part.text : "")
         .join("");
+      // Attachments go as the engine's files (a data: or file: URI each); the server turns office files into text.
+      const files = (parameters.parts ?? []).flatMap((part) => {
+        const file = part as { type?: string; url?: unknown; filename?: unknown };
+        return file.type === "file" && typeof file.url === "string" && file.url
+          ? [{ uri: file.url, name: typeof file.filename === "string" && file.filename ? file.filename : "attachment" }]
+          : [];
+      });
       const promptResult = await request(
         "POST",
         `/api/session/${encodeURIComponent(parameters.sessionID)}/prompt`,
         // The UI's id becomes the saved user message, so an uncertain send can be checked by id.
-        { text, ...(parameters.messageID?.startsWith("msg_") ? { id: parameters.messageID } : {}) },
+        { text, ...(files.length ? { files } : {}), ...(parameters.messageID?.startsWith("msg_") ? { id: parameters.messageID } : {}) },
         options?.signal,
       );
       return promptResult.response.ok ? successfulResult(promptResult, {}) : failedResult(promptResult);

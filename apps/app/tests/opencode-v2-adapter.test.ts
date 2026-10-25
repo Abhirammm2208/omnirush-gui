@@ -1454,6 +1454,27 @@ describe("OpenCode v2 client compatibility", () => {
     }
   });
 
+  test("sends attachments as the engine's files", async () => {
+    const originalFetch = globalThis.fetch;
+    let sent: unknown = null;
+    globalThis.fetch = async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      if (request.url.endsWith("/prompt")) sent = await request.json();
+      return jsonResponse({ data: {} });
+    };
+    try {
+      const client = createClientV2("http://opencode.test/opencode2", "/workspace", {});
+      await client.session.promptAsync({
+        sessionID: "ses_files",
+        model: { providerID: "omnirush", modelID: "gpt-6-astra" },
+        parts: [{ type: "text", text: "look" }, { type: "file", mime: "image/png", url: "data:image/png;base64,AA==", filename: "a.png" } as never],
+      });
+      expect(sent).toEqual({ text: "look", files: [{ uri: "data:image/png;base64,AA==", name: "a.png" }] });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test.each(["model", "prompt"])("propagates network rejection from %s without fabricating success", async (endpoint) => {
     const originalFetch = globalThis.fetch;
     const failure = new TypeError("network unavailable");

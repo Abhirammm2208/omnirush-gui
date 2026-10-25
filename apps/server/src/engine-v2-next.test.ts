@@ -174,3 +174,35 @@ test("the quota wrap on the 2.x engine: asked only while idle, an accepted offer
   expect(asked).toEqual(["ses_b:offer"]);
   expect(compacted).toEqual(["ses_a"]);
 });
+
+test("office attachments reach the 2.x engine as their text; other files stay files", () => withDir(async (dir) => {
+  const { convertOfficeAttachments } = await import("./engine-v2-attachments.js");
+  const made = Bun.spawnSync(["python3", "-c", `
+import zipfile, sys
+d = sys.argv[1]
+zipfile.ZipFile(d + "/doc.docx", "w").writestr("word/document.xml", "<w:document><w:body><w:t>DOCX-4711</w:t></w:body></w:document>")
+zipfile.ZipFile(d + "/deck.pptx", "w").writestr("ppt/slides/slide1.xml", "<p:sld><a:t>PPTX-4712</a:t></p:sld>")
+z = zipfile.ZipFile(d + "/book.xlsx", "w")
+z.writestr("xl/workbook.xml", '<workbook xmlns:r="r"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>')
+z.writestr("xl/_rels/workbook.xml.rels", '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>')
+z.writestr("xl/sharedStrings.xml", "<sst><si><t>XLSX-4713</t></si></sst>")
+z.writestr("xl/worksheets/sheet1.xml", '<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row></sheetData></worksheet>')
+z.close()
+`, dir]);
+  if (made.exitCode !== 0) return;
+  const docx = `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${(await Bun.file(join(dir, "doc.docx")).bytes()).toBase64()}`;
+  const body = await convertOfficeAttachments({
+    text: "read these",
+    files: [
+      { uri: docx, name: "doc.docx" },
+      { uri: `file://${join(dir, "deck.pptx")}`, name: "deck.pptx" },
+      { uri: `file://${join(dir, "book.xlsx")}`, name: "book.xlsx" },
+      { uri: "data:text/plain;base64,aGk=", name: "note.txt" },
+    ],
+  }, dir);
+  expect(String(body.text)).toStartWith("read these");
+  for (const sentinel of ["DOCX-4711", "PPTX-4712", "XLSX-4713"]) expect(String(body.text)).toContain(sentinel);
+  expect(body.files).toEqual([{ uri: "data:text/plain;base64,aGk=", name: "note.txt" }]);
+  const plain = { text: "no office", files: [{ uri: "data:image/png;base64,AA==", name: "a.png" }] };
+  expect(await convertOfficeAttachments(plain, dir)).toBe(plain);
+}));

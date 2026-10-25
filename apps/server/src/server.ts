@@ -234,6 +234,7 @@ import { CloudProviderSync, parseCloudProviderDenSession } from "./cloud-provide
 import { createEngineV2Preview, resolveInitialEngineV2PreviewState, type EngineV2Preview } from "./engine-v2-preview.js";
 import { MIGRATED_FROM } from "./engine-v2-migration.js";
 import { createV2BudgetWrap } from "./engine-v2-budget-wrap.js";
+import { convertOfficeAttachments } from "./engine-v2-attachments.js";
 import { createEditorLsp, LSP_OPS, type LspOp, type LspPayload } from "./editor-lsp.js";
 import { APP_SECRET_HEADER, appRequestRefusal } from "./app-request-gate.js";
 import { isUploadFileDenied, sessionUploaderEnabled } from "./session-uploader.js";
@@ -2227,6 +2228,19 @@ export async function proxyOpencodeV2Request(input: {
     body = JSON.stringify({ ...sessionInput, location: { directory: input.workspace.path } });
     headers.delete("content-length");
     headers.set("content-type", "application/json");
+  }
+  if (method === "POST" && /^\/api\/session\/[^/]+\/prompt$/.test(routePath) && requestBody) {
+    // Office files the engine would drop go in as their text (engine-v2-attachments.ts).
+    let promptInput: unknown = null;
+    try { promptInput = JSON.parse(new TextDecoder().decode(requestBody)); } catch { promptInput = null; }
+    if (isRecord(promptInput) && Array.isArray(promptInput.files) && promptInput.files.length > 0) {
+      const converted = await convertOfficeAttachments(promptInput, input.workspace.path).catch(() => promptInput as Record<string, unknown>);
+      if (converted !== promptInput) {
+        body = JSON.stringify(converted);
+        headers.delete("content-length");
+        headers.set("content-type", "application/json");
+      }
+    }
   }
   // Collection, identical to the v1 mount: the session starts (or resumes) on
   // its first dispatch, the prompt milestone is snapshotted, the request and
