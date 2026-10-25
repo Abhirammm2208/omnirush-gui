@@ -205,6 +205,16 @@ function responseData(value: unknown): unknown {
   return isRecord(value) && "data" in value ? value.data : value;
 }
 
+/** 2.x `GET /api/mcp` ({data: [{name, status: {status, error}}]}) as the 1.x status map, by server name. */
+export function v2McpStatusMap(payload: unknown): Record<string, { status: string; error?: string }> {
+  const out: Record<string, { status: string; error?: string }> = {};
+  for (const entry of responseItems(payload)) {
+    if (!isRecord(entry) || typeof entry.name !== "string" || !isRecord(entry.status) || typeof entry.status.status !== "string") continue;
+    out[entry.name] = { status: entry.status.status, ...(typeof entry.status.error === "string" ? { error: entry.status.error } : {}) };
+  }
+  return out;
+}
+
 function responseItems(value: unknown): unknown[] {
   const data = responseData(value);
   return Array.isArray(data) ? data : [];
@@ -1836,7 +1846,10 @@ export function createClientV2(
       files: async (): Promise<FieldsResult<never[]>> => localResult(baseUrl, "/api/fs/find", []),
     },
     mcp: {
-      status: async (): Promise<FieldsResult<Record<string, never>>> => localResult(baseUrl, "/api/mcp", {}),
+      status: async (_parameters?: DirectoryParameters, options?: RequestOptions): Promise<FieldsResult<Record<string, { status: string; error?: string }>>> => {
+        const result = await request("GET", "/api/mcp", undefined, options?.signal);
+        return result.response.ok ? successfulResult(result, v2McpStatusMap(result.payload)) : failedResult(result);
+      },
     },
     event: {
       subscribe: async (

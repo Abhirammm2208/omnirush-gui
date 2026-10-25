@@ -4,6 +4,7 @@ import type {
   SkillFileTree,
   SkillUploadFile,
 } from "./skill-upload";
+import { v2McpStatusMap } from "./opencode-v2-adapter";
 import type { McpStatusMap } from "../types";
 import type { Message, Part, Session, Todo } from "@opencode-ai/sdk/v2/client";
 import {
@@ -2487,8 +2488,9 @@ export function createOmniRushServerClient(options: { baseUrl: string; token?: s
         `/workspace/${workspaceId}/mcp`,
         { token, hostToken },
       ),
-    getMcpStatus: (workspaceId: string) =>
-      requestJson<McpStatusMap>(baseUrl, `/workspace/${encodeURIComponent(workspaceId)}/opencode/mcp`, { token, hostToken }),
+    // The 2.x engine runs every chat: its MCP status, as the 1.x status map.
+    getMcpStatus: async (workspaceId: string) =>
+      v2McpStatusMap(await requestJson<unknown>(baseUrl, `/workspace/${encodeURIComponent(workspaceId)}/opencode2/api/mcp`, { token, hostToken })) as McpStatusMap,
     listMcpApps: (workspaceId: string) =>
       requestJson<{ servers: OmniRushMcpAppCatalogServer[] }>(
         baseUrl,

@@ -1861,3 +1861,10 @@ describe("OpenCode 2.0.32 routes", () => {
     expect(input).not.toHaveProperty("filePath");
   });
 });
+
+test("MCP status from the 2.x engine reads as the 1.x status map", async () => {
+  const { v2McpStatusMap } = await import("../src/app/lib/opencode-v2-adapter");
+  expect(v2McpStatusMap({ data: [{ name: "memory", status: { status: "connected" } }, { name: "gh", status: { status: "failed", error: "boom" } }, { name: 3 }] }))
+    .toEqual({ memory: { status: "connected" }, gh: { status: "failed", error: "boom" } });
+  expect(v2McpStatusMap(null)).toEqual({});
+});
