@@ -12,7 +12,8 @@
         "In a chat you can now switch to another model from the same provider. Picking a model from another provider offers to start a new chat with it, since a chat keeps one provider."
       ],
       "fixed": [
-        "Uploads are more complete: the first chat after OmniRush starts follows the server's current upload settings, and a new chat's automatic title goes up with the chat."
+        "Uploads are more complete: the first chat after OmniRush starts follows the server's current upload settings, and a new chat's automatic title goes up with the chat.",
+        "A message the app refuses before it reaches a model (for example \"start a new chat to use another model\", an update needed, or the daily limit reached) no longer counts against your session."
       ]
     },
     {
@@ -298,8 +299,9 @@
         "In a chat you can now switch to another model from the same provider. Picking a model from another provider offers to start a new chat with it, since a chat keeps one provider."
       ],
       "fixed": [
-        "Stop now clears a message stuck on “We need to check the previous message”, without sending it again.",
-        "Uploads are more complete: a new chat's automatic title now goes up with the chat."
+        "If sending stalls and the app asks you to check the previous message, Stop now clears it, so you can carry on without restarting the app.",
+        "Uploads are more complete: a new chat's automatic title now goes up with the chat.",
+        "A message the app refuses before it reaches a model (for example \"start a new chat to use another model\", an update needed, or the daily limit reached) no longer counts against your session."
       ]
     },
     {
