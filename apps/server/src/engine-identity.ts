@@ -16,6 +16,8 @@ export type Harness = {
   version: string;
   /** The engine release it came from ("engine-1.18.32-r2"). */
   build_tag: string;
+  /** A 2.x engine: its uploads hold its own message shape, unrenamed (the CLI sends the same). */
+  engine_schema?: "opencode-v2";
 };
 
 const RELEASE_TAG_PREFIX = "engine-";
@@ -35,6 +37,7 @@ export function opencodeHarness(buildTag: string, fallbackVersion: string): Harn
     engine: "omnirush-opencode",
     version,
     build_tag: buildTag.trim() || `${RELEASE_TAG_PREFIX}${version}`,
+    ...(Number(version.split(".")[0]) >= 2 ? { engine_schema: "opencode-v2" as const } : {}),
   };
 }
 

@@ -15,7 +15,13 @@ import { dirname, join } from "node:path";
 import { importNodeSqlite } from "./runtime-db.js";
 
 export const MIGRATED_SESSIONS_FILE = "v1-migrated-sessions.json";
-export const MIGRATED_FROM = "opencode/1.18.32";
+/** The 1.x engine a migrated chat came from (the CLI sends the same value). */
+export const MIGRATED_FROM = "1.18.32";
+
+/** The 2.x engine's own folder under the server's runtime storage dir (engine-v2-preview.ts). */
+export function engineV2Root(runtimeStorageDir: string): string {
+  return join(runtimeStorageDir, "opencode-v2", "state");
+}
 
 type Sqlite = { exec(sql: string): void; all(sql: string): unknown[]; close(): void };
 

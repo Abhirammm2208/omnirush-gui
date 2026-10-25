@@ -28,6 +28,7 @@ posix("the v2 engine gets its own empty config home, not the user's global openc
     expect(env).toMatch(/^OMNIRUSH_GATE_PROVIDERS=omnirush$/m);
     expect(env).toMatch(/^OMNIRUSH_GATE_MCP=$/m);
     expect(env).toMatch(/^OMNIRUSH_NO_SYSTEM_CONFIG=1$/m);
+    expect(env).toMatch(/^OPENCODE_DISABLE_AUTOUPDATE=1$/m);
     expect(/^XDG_DATA_HOME=(.*)$/m.exec(env)?.[1]).toBe(join(dir, "state", "data"));
   } finally {
     await rm(dir, { recursive: true, force: true });

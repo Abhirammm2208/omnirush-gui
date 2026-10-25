@@ -171,6 +171,8 @@ export async function createManagedOpencodeV2Server(
     OMNIRUSH_USER_XDG_CONFIG_HOME: inherited.XDG_CONFIG_HOME ?? "",
     // Claude Code's global files (~/.claude) are not read either.
     OPENCODE_DISABLE_CLAUDE_CODE: "1",
+    // The engine's update check reads only the user's own global config, not ours: never replace the bundled engine.
+    OPENCODE_DISABLE_AUTOUPDATE: "1",
     // A project's own config stays on (its AGENTS.md is stock behaviour); the engine keeps only its
     // descriptive keys there and loads none of its plugins, MCP servers or providers.
     ...(opencodeModelsUrl === undefined ? {} : { OPENCODE_MODELS_URL: opencodeModelsUrl }),

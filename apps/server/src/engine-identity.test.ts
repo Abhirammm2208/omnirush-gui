@@ -40,6 +40,7 @@ function expectHarness(value: unknown): void {
     engine: "omnirush-opencode",
     version: BUNDLED_HARNESS.version,
     build_tag: BUNDLED_HARNESS.build_tag,
+    engine_schema: "opencode-v2",
   });
   const harness = value as Record<string, unknown>;
   for (const key of ["name", "engine", "version", "build_tag"]) {
@@ -65,6 +66,7 @@ describe("engine identity", () => {
     expect(engineBuildVersion("", "v1.18.32")).toBe("1.18.32");
     const harness = opencodeHarness("engine-1.18.32-r2", "v1.18.32");
     expect(harness).toEqual({ name: "opencode", engine: "omnirush-opencode", version: "1.18.32-r2", build_tag: "engine-1.18.32-r2" });
+    expect(opencodeHarness("engine-2.0.32-r2", "2.0.32")).toEqual({ name: "opencode", engine: "omnirush-opencode", version: "2.0.32-r2", build_tag: "engine-2.0.32-r2", engine_schema: "opencode-v2" });
     expect(engineVersionOf(harness)).toBe("opencode/1.18.32-r2");
     // Never empty, even without a tag or version.
     const bare = opencodeHarness("", "");
@@ -78,6 +80,8 @@ describe("engine identity", () => {
     expect(data.engine).toBe("opencode");
     expect(data.engine_version).toBe(BUNDLED_ENGINE_VERSION);
     expectHarness(data.harness);
+    expect("engine_migrated_from" in data).toBe(false);
+    expect(clientLaunchData("1.18.32").engine_migrated_from).toBe("1.18.32");
   });
 });
 

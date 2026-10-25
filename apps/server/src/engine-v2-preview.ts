@@ -22,7 +22,7 @@ import { selectPrimaryCredentialEnvName } from "./managed-provider-auth.js";
 import { isReleaseBuild } from "./release-guard.js";
 import { webSearchSetting } from "./web-search.js";
 import { engineDataDir } from "./engine-data-home.js";
-import { readMigratedSessions, seedV2StoreFromV1 } from "./engine-v2-migration.js";
+import { engineV2Root, readMigratedSessions, seedV2StoreFromV1 } from "./engine-v2-migration.js";
 import type { ServerConfig } from "./types.js";
 
 const PREVIEW_STATE_FILE = "engine-v2-preview.json";
@@ -298,7 +298,7 @@ export async function assertSessionPluginActive(
 
 export function createEngineV2Preview(options: { config: ServerConfig; env?: Pick<EnvService, "list" | "onChange">; deferStart?: boolean }): EngineV2Preview {
   const { config } = options;
-  const rootDir = join(runtimeStorageDir(config), "opencode-v2", "state");
+  const rootDir = engineV2Root(runtimeStorageDir(config));
   const workspaceDir = join(rootDir, "workspace");
   const initialState = resolveInitialEngineV2PreviewState(process.env, readEngineV2PreviewState(config));
   let enabled = initialState.enabled;
