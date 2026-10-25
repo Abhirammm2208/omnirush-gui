@@ -7,7 +7,14 @@
  * compacts the chat (its compaction request is marked as the wrap); a failed
  * wrap becomes a notice with a retry, never the question again.
  */
-import { replacesWrapOffer, startWrapNow, wrapFinished } from "./opencode-plugins/budget-wrap-rules.js";
+import { pathToFileURL } from "node:url";
+
+import { omnirushPluginPath } from "./omnirush-extensions-plugin-path.js";
+
+type WrapRules = typeof import("./opencode-plugins/budget-wrap-rules.js");
+// The shared rules (PARITY with the CLI) ship beside the engine plugins, outside the app archive.
+let rules: Promise<WrapRules> | undefined;
+const wrapRules = () => (rules ??= import(pathToFileURL(omnirushPluginPath("budget-wrap-rules")).href) as Promise<WrapRules>);
 
 const REQUIRED_HEADER = "x-omnirush-wrap-required";
 const WRAP_UP_HEADER = "x-omnirush-wrap-up";
@@ -49,7 +56,7 @@ export function createV2BudgetWrap(deps: BudgetWrapDeps) {
     } catch {
       ok = false;
     }
-    if (wrapFinished({ ok, compacted: ok })) {
+    if ((await wrapRules()).wrapFinished({ ok, compacted: ok })) {
       await update(sessionId, entry, "finish");
       pending.delete(sessionId);
       return;
@@ -76,7 +83,7 @@ export function createV2BudgetWrap(deps: BudgetWrapDeps) {
         const offered = await update(sessionId, entry, "offer");
         if (offered === "decline" || offered === "done") { pending.delete(sessionId); break; }
         if (offered === "failed" && now() - (entry.failedAt ?? 0) > RETRY_WINDOW_MS) { pending.delete(sessionId); break; }
-        if (startWrapNow({ choice: offered, busy: false, inFlight: entry.inFlight })) { await compact(sessionId, entry); continue; }
+        if ((await wrapRules()).startWrapNow({ choice: offered, busy: false, inFlight: entry.inFlight })) { await compact(sessionId, entry); continue; }
         await sleep(3_000);
       }
       if (pending.get(sessionId) === entry && !entry.inFlight) void update(sessionId, entry, "hold");
@@ -98,7 +105,8 @@ export function createV2BudgetWrap(deps: BudgetWrapDeps) {
         return;
       }
       const id = headers.get(OFFER_HEADER) || `legacy:${headers.get(SCOPES_HEADER) ?? ""}`;
-      if (!replacesWrapOffer(current ? { offerID: current.id } : undefined, id) || current?.inFlight) return;
+      // An offer replaces the previous one only when it is a new offer (budget-wrap-rules.ts replacesWrapOffer).
+      if ((current && current.id === id) || current?.inFlight) return;
       if (current) void update(sessionId, current, "clear");
       pending.delete(sessionId);
       pending.set(sessionId, { id, scopes: headers.get(SCOPES_HEADER) || "token", watching: false, inFlight: false, approved: false });
