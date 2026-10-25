@@ -1,19 +1,20 @@
-import { managedPolicyPluginPath } from "./managed-policy-plugin.js";
+import { managedPolicyPluginPath, sessionNextPluginPath } from "./managed-policy-plugin.js";
 import type { EnginePermissionRule } from "./managed-policy-rules.js";
 // Parallel v2 lane prototype: provider injection is a watched-config write. This module
 // deliberately has no reload/dispose call, unlike managed-opencode.ts and server.ts reloadOpencodeEngine.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
-export { installOpencodeV2Binary } from "./opencode-v2-binary.js";
 
 import { loopbackFetch } from "./server-fetch.js";
 import { writeFileAtomic } from "./atomic-write.js";
 import { currentProviderLockPolicy, noteEngineStarted, providerAllowed } from "./provider-lock.js";
 import { providerLockEnv } from "./provider-lock/provider-lock.mjs";
-import { isReleaseBuild, RELEASE_ENGINE_ERROR } from "./release-guard.js";
+import { gateEnv } from "./engine-gates/engine-gates.mjs";
+import { releaseEngineBinary } from "./release-guard.js";
 
 export interface OpencodeV2ModelSpec {
   id: string;
@@ -78,11 +79,40 @@ function diagnostics(exitCode: number | null, stdout: string, stderr: string): E
   );
 }
 
+/**
+ * The 2.x engine loads a configured plugin only from a directory (a file path is skipped with a
+ * warning): each plugin module gets one, whose server.js re-exports it.
+ */
+export async function pluginDirectories(root: string, modules: string[]): Promise<string[]> {
+  return Promise.all(modules.map(async (module) => {
+    const directory = join(root, basename(module, extname(module)));
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeFile(join(directory, "server.js"), `export { default } from ${JSON.stringify(pathToFileURL(module).href)};\n`, { mode: 0o600 });
+    return directory;
+  }));
+}
+
+/**
+ * The engine's environment with its gates last (engine-gates.mjs): only the gateway provider and no MCP
+ * server (MCP stays off on this engine until its allowlist is wired). The engine fails open without the
+ * gate variables, so the spawn is refused when they are missing.
+ */
+export function engineV2SpawnEnv(env: Record<string, string>): Record<string, string> {
+  return assertEngineGates({ ...env, ...gateEnv({ provider: "omnirush", mcp: [] }) });
+}
+
+export function assertEngineGates(env: Record<string, string | undefined>): Record<string, string> {
+  if (!env.OMNIRUSH_GATE_PROVIDERS || env.OMNIRUSH_NO_SYSTEM_CONFIG !== "1" || typeof env.OMNIRUSH_GATE_MCP !== "string") {
+    throw new Error("The OmniRush engine's gates are missing; it was not started.");
+  }
+  return env as Record<string, string>;
+}
+
 export async function createManagedOpencodeV2Server(
   options: ManagedOpencodeV2ServerOptions,
 ): Promise<ManagedOpencodeV2Server> {
-  // A release build runs only the engine it bundles (release-guard.ts); this preview downloads another.
-  if (isReleaseBuild()) throw new Error(RELEASE_ENGINE_ERROR);
+  // A release build runs only the engine it bundles, checked by its sha256 (release-guard.ts).
+  const bin = await releaseEngineBinary(options.bin) ?? options.bin;
   const hostname = options.hostname ?? "127.0.0.1";
   const port = options.port ?? 0;
   const bootTimeoutMs = options.bootTimeoutMs ?? 60_000;
@@ -124,24 +154,29 @@ export async function createManagedOpencodeV2Server(
   await chmod(configHome, 0o700);
   // Load enforcement on the first boot, before any session can run.
   await writeProviders();
-  const child = spawn(options.bin, ["serve", "--hostname", hostname, "--port", String(port)], {
-    env: {
-      ...inherited,
-      OPENCODE_PASSWORD: password,
-      OPENCODE_DB: join(options.rootDir, "opencode.db"),
-      OPENCODE_CONFIG_DIR: configDir,
-      XDG_CONFIG_HOME: configHome,
-      // No session sharing to an outside share service.
-      OPENCODE_DISABLE_SHARE: "1",
-      // A project's own config files are not read: this engine has no MCP filter, and it starts a project's
-      // MCP servers (with this environment, the password included) as soon as it opens the folder.
-      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-      OPENCODE_CONFIG_PROJECT_DISABLE: "1",
-      OPENCODE_AUTO_SHARE: "false",
-      ...(opencodeModelsUrl === undefined ? {} : { OPENCODE_MODELS_URL: opencodeModelsUrl }),
-      ...(disableModelsFetch === undefined ? {} : { OPENCODE_DISABLE_MODELS_FETCH: disableModelsFetch }),
-      ...providerLockEnv(providerLock).set,
-    },
+  const env = engineV2SpawnEnv({
+    ...inherited,
+    OPENCODE_PASSWORD: password,
+    OPENCODE_DB: join(options.rootDir, "opencode.db"),
+    OPENCODE_CONFIG_DIR: configDir,
+    XDG_CONFIG_HOME: configHome,
+    // Its data and state (snapshots, logs, sign-ins) stay in its own folder, never the CLI's
+    // <XDG data>/omnirush; agent shells get the user's back (omnirush-session-next.ts).
+    XDG_DATA_HOME: join(options.rootDir, "data"),
+    XDG_STATE_HOME: join(options.rootDir, "state"),
+    OMNIRUSH_USER_XDG_DATA_HOME: inherited.XDG_DATA_HOME ?? "",
+    OMNIRUSH_USER_XDG_STATE_HOME: inherited.XDG_STATE_HOME ?? "",
+    OMNIRUSH_USER_XDG_CONFIG_HOME: inherited.XDG_CONFIG_HOME ?? "",
+    // Claude Code's global files (~/.claude) are not read either.
+    OPENCODE_DISABLE_CLAUDE_CODE: "1",
+    // A project's own config stays on (its AGENTS.md is stock behaviour); the engine keeps only its
+    // descriptive keys there and loads none of its plugins, MCP servers or providers.
+    ...(opencodeModelsUrl === undefined ? {} : { OPENCODE_MODELS_URL: opencodeModelsUrl }),
+    ...(disableModelsFetch === undefined ? {} : { OPENCODE_DISABLE_MODELS_FETCH: disableModelsFetch }),
+    ...providerLockEnv(providerLock).set,
+  });
+  const child = spawn(bin, ["serve", "--hostname", hostname, "--port", String(port)], {
+    env,
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -189,16 +224,17 @@ export async function createManagedOpencodeV2Server(
   }
 
   async function health(): Promise<OpencodeV2Health> {
-    const response = await fetchJson("/api/health", { timeoutMs: 5_000 });
+    // 2.0.x has no health route: its info answers 200 once the server serves.
+    const response = await fetchJson("/api/info", { timeoutMs: 5_000 });
     if (response.status !== 200 || !isRecord(response.json)) {
       throw new Error(`OmniRush v2 health returned HTTP ${response.status}`);
     }
-    const { healthy, version, pid } = response.json;
-    if (typeof healthy !== "boolean" || typeof version !== "string" || typeof pid !== "number") {
+    const { version, pid } = response.json;
+    if (typeof version !== "string" || typeof pid !== "number") {
       throw new Error("OmniRush v2 health returned an invalid payload");
     }
     if (pid !== child.pid) throw new Error("OmniRush v2 health did not match the spawned child");
-    return { healthy, version, pid };
+    return { healthy: true, version, pid };
   }
 
   async function writeProviders(): Promise<void> {
@@ -241,9 +277,12 @@ export async function createManagedOpencodeV2Server(
     const target = join(configDir, "opencode.json");
     await writeFileAtomic(target, `${JSON.stringify({
       $schema: "https://opencode.ai/config.json",
+      // No session sharing to an outside service; the bundled engine never replaces itself.
+      share: "disabled",
+      update: "disable",
       providers: providerConfig,
       ...(options.permissions ? { permissions: await options.permissions() } : {}),
-      ...(options.env?.OMNIRUSH_SERVER_URL ? { plugins: [managedPolicyPluginPath(true)] } : {}),
+      plugins: await pluginDirectories(join(options.rootDir, "plugins"), [sessionNextPluginPath(), ...(options.env?.OMNIRUSH_SERVER_URL ? [managedPolicyPluginPath(true)] : [])]),
     }, null, 2)}\n`, { mode: 0o600 });
   }
 

@@ -1,14 +1,11 @@
 import { executionRules } from "./managed-policy-rules.js";
 import { managedDesktopPolicy } from "./managed-desktop-policy.js";
-import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import constants from "../../../constants.json" with { type: "json" };
 import {
   createManagedOpencodeV2Server,
-  installOpencodeV2Binary,
   type ManagedOpencodeV2Server,
   type OpencodeV2ProviderSpec,
 } from "./managed-opencode-v2.js";
@@ -22,9 +19,11 @@ import {
 } from "./runtime-opencode-config-store.js";
 import type { EnvService } from "./env-file.js";
 import { selectPrimaryCredentialEnvName } from "./managed-provider-auth.js";
+import { OMNIRUSH_SESSION_PLUGIN_ID } from "./opencode-plugins/omnirush-session-next.js";
+import { engineDataDir } from "./engine-data-home.js";
+import { readMigratedSessions, seedV2StoreFromV1 } from "./engine-v2-migration.js";
 import type { ServerConfig } from "./types.js";
 
-const OPENCODE_V2_VERSION = constants.opencodeV2Version;
 const PREVIEW_STATE_FILE = "engine-v2-preview.json";
 const UNSET_API_KEY = "omnirush-engine-v2-preview-unset";
 // A cold sidecar can return HTTP 503 while its model catalog initializes for 17–20 seconds.
@@ -36,7 +35,7 @@ export interface EngineV2PreviewStatus {
   running: boolean;
   version?: string;
   pid?: number;
-  binSource?: "env" | "path" | "cache";
+  binSource?: "env";
   mirroredProviderIds: string[];
   skippedProviderIds: string[];
   catalogModelIds: string[];
@@ -62,6 +61,8 @@ export interface EngineV2Preview {
   connection(): { url: string; username: string; password: string } | undefined;
   ensureWorkspaceReady(directory: string): Promise<void>;
   syncWorkspaceMcp(workspaceId: string, directory: string): Promise<void>;
+  /** Whether a chat came from the 1.x store (engine-v2-migration.ts). */
+  migratedFromV1(sessionId: string): boolean;
   stop(): Promise<void>;
 }
 
@@ -70,19 +71,20 @@ export interface EngineV2PreviewState {
   chatRouting?: boolean;
 }
 
+/**
+ * The 2.x engine runs every new chat: on, with chats routed to it, whatever an
+ * earlier preview setting or switch said. `sidecar` (tests only) leaves chats off it.
+ */
 export function resolveInitialEngineV2PreviewState(
   env: NodeJS.ProcessEnv,
-  persisted: EngineV2PreviewState,
+  _persisted?: EngineV2PreviewState,
 ): EngineV2PreviewState {
-  const override = env.OMNIRUSH_ENGINE_V2_PREVIEW;
-  if (override === "1" || override === "chat") return { enabled: true, chatRouting: true };
-  if (override === "sidecar") return { enabled: true, chatRouting: false };
-  return persisted;
+  return { enabled: true, chatRouting: env.OMNIRUSH_ENGINE_V2_PREVIEW !== "sidecar" };
 }
 
 interface ResolvedBinary {
   bin: string;
-  source: "env" | "path" | "cache";
+  source: "env";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -121,35 +123,13 @@ export async function writeEngineV2PreviewState(
   await writeFile(statePath(config), `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
-function exec(file: string, args: string[], options: { cwd?: string; timeout?: number } = {}): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile(file, args, options, (error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
-}
-
 async function resolveBinary(config: ServerConfig): Promise<ResolvedBinary> {
-  const override = process.env.OMNIRUSH_OPENCODE2_BIN?.trim();
-  if (override) return { bin: override, source: "env" };
-
-  let pathError = "not found";
-  try {
-    await exec("opencode2", ["--version"]);
-    return { bin: "opencode2", source: "path" };
-  } catch (error) {
-    pathError = errorMessage(error);
-  }
-
-  try {
-    const binary = await installOpencodeV2Binary(join(runtimeStorageDir(config), "opencode-v2-verified"), OPENCODE_V2_VERSION);
-    return { bin: binary, source: "cache" };
-  } catch (error) {
-    throw new Error(
-      `Unable to resolve OmniRush v2 (${pathError}; verified download: ${errorMessage(error)}). Configure a working runtime binary override in advanced settings.`,
-    );
-  }
+  // Engines the preview downloaded before the 2.x engine shipped inside the app.
+  await rm(join(runtimeStorageDir(config), "opencode-v2-verified"), { recursive: true, force: true }).catch(() => undefined);
+  // The app's bundled engine (Electron main sets it; a release build checks its hash there and at launch).
+  const bin = process.env.OMNIRUSH_OPENCODE2_BIN?.trim();
+  if (!bin) throw new Error("The OmniRush engine was not found. Reinstall OmniRush.ai.");
+  return { bin, source: "env" };
 }
 
 export function mapRuntimeProvidersToV2Specs(
@@ -294,6 +274,23 @@ export function mapRuntimeMcpToV2(value: unknown): Record<string, unknown> | und
     ...(oauth === undefined ? {} : { oauth }), ...shared };
 }
 
+/**
+ * Chats bind to the gateway only through the session plugin's headers, and a 2.x plugin that
+ * fails to load only warns: no chat starts in a location where it is not active.
+ */
+export async function assertSessionPluginActive(
+  engine: Pick<ManagedOpencodeV2Server, "fetchJson">,
+  directory: string,
+): Promise<void> {
+  const response = await engine.fetchJson("/api/plugin", { directory, timeoutMs: 5_000 });
+  const plugins = isRecord(response.json) && Array.isArray(response.json.data) ? response.json.data : [];
+  const ours = plugins.find((plugin) => isRecord(plugin) && plugin.id === OMNIRUSH_SESSION_PLUGIN_ID);
+  const state = isRecord(ours) ? (isRecord(ours.state) ? ours.state.status ?? ours.state.type : ours.state) : undefined;
+  if (response.status !== 200 || !ours || (state !== undefined && !["active", "loaded", "ready"].includes(String(state)))) {
+    throw new Error("The OmniRush engine's session plugin is not active; chats cannot start.");
+  }
+}
+
 export function createEngineV2Preview(options: { config: ServerConfig; env?: Pick<EnvService, "list" | "onChange">; deferStart?: boolean }): EngineV2Preview {
   const { config } = options;
   const rootDir = join(runtimeStorageDir(config), "opencode-v2", "state");
@@ -317,6 +314,7 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
   let mirrorInFlight: Promise<void> | undefined;
   let mirrorDirty = false;
   const workspaceReadiness = new Map<string, Promise<void>>();
+  let migrated = readMigratedSessions(rootDir);
   let mirroredSpecs: OpencodeV2ProviderSpec[] = [];
   const mcpCleaned = new Set<string>();
   const mcpInFlight = new Map<string, Promise<void>>();
@@ -347,7 +345,7 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
           : []
       ));
       await Promise.all(names.map(async (name) => {
-        const result = await active.fetchJson(`/api/mcp/${encodeURIComponent(name)}`, {
+        const result = await active.fetchJson(`/api/experimental/mcp/${encodeURIComponent(name)}`, {
           method: "DELETE", directory, timeoutMs: 15_000,
         });
         if (result.status !== 204 && result.status !== 404) throw new Error(`OmniRush v2 MCP removal failed (${result.status})`);
@@ -454,6 +452,13 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
     binSource = resolved.source;
     if (!enabled || !allowRunning) return;
     await mkdir(workspaceDir, { recursive: true });
+    // First start next to a 1.x store: back it up and seed the 2.x store from a copy (the 1.x store is kept).
+    try {
+      await seedV2StoreFromV1(rootDir, join(engineDataDir(process.env), "opencode.db"));
+    } catch (error) {
+      lastError = `1.x chats were not brought over: ${errorMessage(error)}`;
+    }
+    migrated = readMigratedSessions(rootDir);
     const opencodeModelsEnv = await resolveOpencodeModelsEnv();
     const managed = await createManagedOpencodeV2Server({
       bin: resolved.bin,
@@ -515,7 +520,7 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
 
   function recordStartError(error: unknown): void {
     running = false;
-    lastError = `${errorMessage(error)} Configure a working runtime binary override in advanced settings.`;
+    lastError = errorMessage(error);
   }
 
   async function stopRuntime(): Promise<void> {
@@ -529,6 +534,7 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
   }
 
   async function setEnabled(nextEnabled: boolean): Promise<EngineV2PreviewStatus> {
+    if (!nextEnabled) throw new Error("The 2.x engine runs every chat and cannot be turned off.");
     if (nextEnabled && enabled && running) return status();
     await writeEngineV2PreviewState(config, { enabled: nextEnabled, chatRouting });
     enabled = nextEnabled;
@@ -546,6 +552,7 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
   }
 
   async function setChatRouting(nextChatRouting: boolean): Promise<EngineV2PreviewStatus> {
+    if (!nextChatRouting) throw new Error("The 2.x engine runs every chat and cannot be turned off.");
     await writeEngineV2PreviewState(config, { enabled, chatRouting: nextChatRouting });
     chatRouting = nextChatRouting;
     return status();
@@ -576,7 +583,7 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
         await new Promise((resolve) => setTimeout(resolve, 100));
       } while (Date.now() < deadline);
       throw new Error("OmniRush v2 workspace provider configuration did not become ready");
-    })();
+    })().then(() => assertSessionPluginActive(active, directory));
     workspaceReadiness.set(directory, pending);
     try { await pending; } catch (error) {
       if (workspaceReadiness.get(directory) === pending) workspaceReadiness.delete(directory);
@@ -592,5 +599,5 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
     if (enabled) void start().catch(recordStartError);
   }
   if (!options.deferStart) startWhenReady();
-  return { start: startWhenReady, status, setEnabled, setChatRouting, connection, ensureWorkspaceReady, syncWorkspaceMcp, stop };
+  return { start: startWhenReady, status, setEnabled, setChatRouting, connection, ensureWorkspaceReady, syncWorkspaceMcp, migratedFromV1: (id) => migrated.has(id), stop };
 }

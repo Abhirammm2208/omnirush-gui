@@ -231,6 +231,7 @@ process.once("SIGTERM", () => void stopAll(143));
 
 if (process.env.OMNIRUSH_ELECTRON_SKIP_SHARED_PREPARE !== "1") {
   runSync(nodeCmd, [resolve(__dirname, "prepare-sidecar.mjs"), "--force", "--outdir", electronSidecarDir], { cwd: desktopRoot });
+  runSync(nodeCmd, [resolve(__dirname, "prepare-sidecar.mjs"), "--force", "--engine", "v2", "--outdir", electronSidecarDir], { cwd: desktopRoot });
   runSync(nodeCmd, [resolve(__dirname, "prepare-computer-use-helper.mjs"), "--force", "--outdir", electronHelperDir], { cwd: desktopRoot });
 }
 

@@ -231,7 +231,8 @@ import { modelsNamedIn } from "./omnirush-swarm.js";
 import { findManagedEngineWorkspace } from "./workspaces.js";
 import { startThreadApprovalReplayer, type ThreadApprovalReplayer } from "./thread-approvals.js";
 import { CloudProviderSync, parseCloudProviderDenSession } from "./cloud-provider-sync.js";
-import { createEngineV2Preview, type EngineV2Preview } from "./engine-v2-preview.js";
+import { createEngineV2Preview, resolveInitialEngineV2PreviewState, type EngineV2Preview } from "./engine-v2-preview.js";
+import { MIGRATED_FROM } from "./engine-v2-migration.js";
 import { APP_SECRET_HEADER, appRequestRefusal } from "./app-request-gate.js";
 import { isUploadFileDenied, sessionUploaderEnabled } from "./session-uploader.js";
 import { editorUserEditEvent, editorUserReviewEvent } from "./editor-events.js";
@@ -991,6 +992,11 @@ function isPromptAsyncProxyRequest(method: string, proxyPath: string) {
 // A prompt dispatch (v1 prompt_async, the v1 engine's synchronous prompt
 // `POST /session/:id/message`, v2 prompt, or a slash command) is the session
 // uploader's "prompt" milestone: the workspace is captured as the turn begins.
+/** A new chat or a turn on the 1.x engine (retired for chats: the 2.x engine runs them). */
+export function startsV1Chat(method: string, proxyPath: string): boolean {
+  return method === "POST" && /^\/session(?:\/[^/]+\/(?:prompt_async|prompt|message|command|shell|summarize|init|fork))?\/?$/.test(normalizeOpencodeProxyPath(proxyPath));
+}
+
 function isUploadPromptDispatch(method: string, proxyPath: string): boolean {
   return method === "POST" && /^\/session\/[^/]+\/(?:prompt_async|prompt|message|command)$/.test(normalizeOpencodeProxyPath(proxyPath));
 }
@@ -1671,6 +1677,7 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
             proxyPath: mount.restPath,
             connection,
             recoverySignal: taskRecovery?.owns(request) ? request.signal : undefined,
+            migratedFromV1: engineV2Preview.migratedFromV1,
           });
           const response = taskRecovery ? await taskRecovery.forward(workspace, "v2", decodeEngineRoutePath(mount.restPath), request, send) : await send();
           return finalize(response);
@@ -2015,6 +2022,8 @@ export async function proxyOpencodeV2Request(input: {
   proxyPath: string;
   connection: { url: string; username: string; password: string };
   recoverySignal?: AbortSignal;
+  /** Whether a chat came from the 1.x store: its turns are marked and kept out of deliveries. */
+  migratedFromV1?: (sessionId: string) => boolean;
 }): Promise<Response> {
   const method = input.request.method.toUpperCase();
   if (method !== "GET" && method !== "HEAD") ensureWritable(input.config);
@@ -2134,7 +2143,7 @@ export async function proxyOpencodeV2Request(input: {
     });
     const value = buildOmniRushV2Instructions(false);
     const instructionUrl = new URL(target);
-    instructionUrl.pathname = `/api/session/${encodeURIComponent(sessionId)}/instructions/entries/${OMNIRUSH_V2_INSTRUCTION_KEY}`;
+    instructionUrl.pathname = `/api/experimental/session/${encodeURIComponent(sessionId)}/instructions/entries/${OMNIRUSH_V2_INSTRUCTION_KEY}`;
     const synced = await loopbackFetch(instructionUrl.toString(), {
       method: "PUT", headers: internalHeaders, body: JSON.stringify({ value }), signal: AbortSignal.timeout(15_000),
     });
@@ -2187,6 +2196,7 @@ export async function proxyOpencodeV2Request(input: {
     capture.boxSession(uploadedSessionId, boxInfo);
     capture.permissionMode(await capturePermissionMode(input.config));
     capture.startSession(uploadedSessionId, input.workspace.id, input.workspace.path, turnsBefore);
+    if (input.migratedFromV1?.(uploadedSessionId)) capture.recordTrace(uploadedSessionId, "engine.migrated_from", { from: MIGRATED_FROM, exclude_from_delivery: true });
     const boxPlan = await boxServiceFor(input.config).planOutcome(uploadedSessionId, input.workspace).catch(() => null);
     if (boxPlan) capture.recordTrace(uploadedSessionId, "box.plan", boxPlan);
     capture.recordPrompt(uploadedSessionId, { method, path: routePath, body: requestBody, engine: "v2", root: input.workspace.path, attachments: true, dispatchedAt: Date.now() });
@@ -2492,6 +2502,12 @@ export async function proxyOpencodeRequest(input: {
     ensureWritable(input.config);
   }
   assertEngineMcpRouteAllowed(input.config, method, normalizeOpencodeProxyPath(proxyPath));
+  // Chats run on the 2.x engine (/opencode2): the 1.x engine starts no chat and no turn.
+  if (workspace && workspace.workspaceType !== "remote" && startsV1Chat(method, proxyPath)
+    && resolveInitialEngineV2PreviewState(process.env).chatRouting) {
+    await input.request.arrayBuffer().catch(() => undefined);
+    return jsonResponse({ error: "engine_v1_retired", message: "Chats now run on the new engine. Update OmniRush.ai or reopen the chat." }, 409);
+  }
   if (workspace && workspace.workspaceType !== "remote" && isUploadPromptDispatch(method, proxyPath)) {
     if (uploadDispatchRefused(input.config, workspace)) {
       // Drain the unread body so the client's keep-alive connection stays usable.
@@ -4780,6 +4796,9 @@ function createRoutes(
     }
     if (body.chatRouting !== undefined && typeof body.chatRouting !== "boolean") {
       throw new ApiError(400, "invalid_payload", "chatRouting must be a boolean");
+    }
+    if (body.enabled === false || body.chatRouting === false) {
+      throw new ApiError(409, "engine_v2_required", "The 2.x engine runs every chat and cannot be turned off.");
     }
     let status = engineV2Preview.status();
     if (typeof body.enabled === "boolean") status = await engineV2Preview.setEnabled(body.enabled);

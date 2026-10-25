@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 async function engineRelease(): Promise<{ tag: string; version: string }> {
-  const path = resolve(import.meta.dir, "../../desktop/scripts/engine-release.json");
+  const path = resolve(import.meta.dir, "../../desktop/scripts/engine-v2-release.json");
   return JSON.parse(await readFile(path, "utf8")) as { tag: string; version: string };
 }
 
@@ -52,8 +52,8 @@ describe("engine identity", () => {
   test("names the engine release the build bundles", async () => {
     const release = await engineRelease();
     // constants.json and engine-release.json name the same engine build.
-    expect((constants as { engineReleaseTag?: string }).engineReleaseTag).toBe(release.tag);
-    expect(constants.opencodeVersion.replace(/^v/, "")).toBe(release.version);
+    expect((constants as { engineV2ReleaseTag?: string }).engineV2ReleaseTag).toBe(release.tag);
+    expect(constants.opencodeV2Version).toBe(release.version);
     expect(BUNDLED_HARNESS.build_tag).toBe(release.tag);
     expect(BUNDLED_HARNESS.version.startsWith(release.version)).toBe(true);
     expect(BUNDLED_HARNESS.version).toBe(release.tag.replace(/^engine-/, ""));

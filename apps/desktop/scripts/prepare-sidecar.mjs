@@ -29,6 +29,8 @@ const readArg = (name) => {
 };
 
 const sidecarOverride = process.env.OMNIRUSH_SIDECAR_DIR?.trim() || readArg("--outdir");
+// `--engine v2`: the OpenCode 2.x engine (engine-v2-release.json) beside the 1.x one, as `opencode2-<triple>`.
+const engineV2 = readArg("--engine") === "v2";
 const sidecarDir = sidecarOverride ? resolve(sidecarOverride) : join(__dirname, "..", "resources", "sidecars");
 const constantsPath = resolve(__dirname, "..", "..", "..", "constants.json");
 
@@ -36,7 +38,8 @@ const opencodeVersion = (() => {
   try {
     const raw = readFileSync(constantsPath, "utf8");
     const parsed = JSON.parse(raw);
-    return typeof parsed.opencodeVersion === "string" ? parsed.opencodeVersion.trim() || null : null;
+    const pinned = engineV2 ? parsed.opencodeV2Version : parsed.opencodeVersion;
+    return typeof pinned === "string" ? pinned.trim() || null : null;
   } catch {
     return null;
   }
@@ -53,7 +56,7 @@ const normalizeVersion = (value) => {
 // bundles): per-platform tarballs on a public pre-release of this repo (never
 // marked latest), sha256-pinned in engine-release.json. No token is needed.
 // Each tarball holds one executable, `opencode[.exe]`, at its root.
-const engineReleasePath = resolve(__dirname, "engine-release.json");
+const engineReleasePath = resolve(__dirname, engineV2 ? "engine-v2-release.json" : "engine-release.json");
 const engineRelease = JSON.parse(readFileSync(engineReleasePath, "utf8"));
 
 // Target triple for native platform binaries
@@ -76,10 +79,11 @@ const resolvedTargetTriple = (() => {
 })();
 const isWindowsTarget = process.platform === "win32" || resolvedTargetTriple?.includes("windows") === true;
 
-const opencodeBaseName = isWindowsTarget ? "opencode.exe" : "opencode";
+const engineBase = engineV2 ? "opencode2" : "opencode";
+const opencodeBaseName = isWindowsTarget ? `${engineBase}.exe` : engineBase;
 const opencodePath = join(sidecarDir, opencodeBaseName);
 const opencodeTargetName = resolvedTargetTriple
-  ? `opencode-${resolvedTargetTriple}${isWindowsTarget ? ".exe" : ""}`
+  ? `${engineBase}-${resolvedTargetTriple}${isWindowsTarget ? ".exe" : ""}`
   : null;
 const opencodeTargetPath = opencodeTargetName ? join(sidecarDir, opencodeTargetName) : null;
 
@@ -230,7 +234,7 @@ const readRecordedEngine = () => {
   for (const name of names.filter(Boolean)) {
     try {
       const parsed = JSON.parse(readFileSync(join(sidecarDir, name), "utf8"));
-      if (parsed?.opencode) return parsed.opencode;
+      if (parsed?.[engineBase]) return parsed[engineBase];
     } catch {
       // not recorded
     }
@@ -279,8 +283,14 @@ const readEngineArchive = async () => {
     }
     return bytes;
   };
-  const local = process.env.OMNIRUSH_ENGINE_ARCHIVE?.trim();
+  const local = engineV2 ? null : process.env.OMNIRUSH_ENGINE_ARCHIVE?.trim();
   if (local) return verify(readFileSync(resolve(local)), local);
+  // A folder of release archives not uploaded yet (either engine; only its own asset name is read).
+  const localDir = process.env.OMNIRUSH_ENGINE_ARCHIVE_DIR?.trim();
+  if (localDir && existsSync(join(resolve(localDir), engineAsset.name))) {
+    const file = join(resolve(localDir), engineAsset.name);
+    return verify(readFileSync(file), file);
+  }
   const cacheDir = process.env.OMNIRUSH_ENGINE_CACHE?.trim()
     ? resolve(process.env.OMNIRUSH_ENGINE_CACHE.trim())
     : join(homedir(), ".cache", "omnirush-desktop", "engine");
@@ -381,8 +391,17 @@ const omnirushServerVersion = (() => {
   }
 })();
 
+// One versions.json for both engines: each run updates its own entry.
+const previousVersions = (() => {
+  try {
+    return JSON.parse(readFileSync(join(sidecarDir, "versions.json"), "utf8"));
+  } catch {
+    return {};
+  }
+})();
 const versions = {
-  opencode: {
+  ...(engineV2 ? previousVersions : previousVersions.opencode2 ? { opencode2: previousVersions.opencode2 } : {}),
+  [engineBase]: {
     version: normalizedOpencodeVersion,
     sha256: opencodeCandidatePath && existsSync(opencodeCandidatePath) ? sha256File(opencodeCandidatePath) : null,
     release: engineRelease.tag,
@@ -420,7 +439,7 @@ try {
 
 // The Linux sandbox's helpers (boxsh, boxd) beside the engine: optional, never fatal.
 try {
-  await import("./prepare-box-helpers.mjs");
+  if (!engineV2) await import("./prepare-box-helpers.mjs");
 } catch (error) {
   console.warn(`Sandbox helpers not prepared: ${error instanceof Error ? error.message : String(error)}`);
 }

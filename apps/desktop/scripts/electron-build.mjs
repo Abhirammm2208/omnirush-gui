@@ -49,6 +49,7 @@ function writeSentryBuildConfig() {
 }
 
 run(nodeCmd, [resolve(__dirname, "prepare-sidecar.mjs"), "--force", "--outdir", electronSidecarDir], desktopRoot);
+run(nodeCmd, [resolve(__dirname, "prepare-sidecar.mjs"), "--force", "--engine", "v2", "--outdir", electronSidecarDir], desktopRoot);
 run(nodeCmd, [resolve(__dirname, "prepare-computer-use-helper.mjs"), "--force", "--outdir", electronHelperDir], desktopRoot);
 run(nodeCmd, [resolve(__dirname, "prepare-runtime-node-modules.mjs"), "--outdir", packagedRuntimeRoot], desktopRoot);
 // The built-in UI-control MCP ships inside the app as one bundled module and

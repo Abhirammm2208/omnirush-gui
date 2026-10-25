@@ -2151,6 +2151,13 @@ export function createRuntimeManager({
     const host = options.remoteAccessEnabled ? "0.0.0.0" : "127.0.0.1";
 
     const managedOpencode = options.manageOpencode ? resolveOpencodeBinary(options.opencodeBinPath) : null;
+    // The 2.x engine every new chat runs on (engine-v2-preview.ts reads it): a release
+    // runs only its bundled, hash-checked copy; a dev build may name another one.
+    if (isReleaseBuild()) process.env.OMNIRUSH_OPENCODE2_BIN = releaseEngineBinary({ fileNames: binaryFileNames("opencode2") }).path;
+    else if (!process.env.OMNIRUSH_OPENCODE2_BIN?.trim()) {
+      const bundledV2 = resolveBinaryInfo("opencode2");
+      if (bundledV2) process.env.OMNIRUSH_OPENCODE2_BIN = bundledV2.path;
+    }
     omnirushServerState.managedOpencodeBinPath = managedOpencode?.path ?? null;
     omnirushServerState.managedOpencodeBinSource = managedOpencode?.source ?? null;
     if (options.manageOpencode) {

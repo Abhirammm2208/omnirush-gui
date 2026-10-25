@@ -15,12 +15,13 @@ export function desktopVariant(env = process.env) {
 /**
  * The sha256 of each bundled engine binary, comma-separated in sorted order.
  * A macOS build bundles one engine per architecture (arm64 and x64): each is
- * recorded, and a release runs only a binary with one of these hashes.
+ * recorded, as is the 2.x engine (opencode2) beside the 1.x one, and a
+ * release runs only a binary with one of these hashes.
  */
 export function bundledEngineSha256(sidecarDir) {
-  const names = existsSync(sidecarDir) ? readdirSync(sidecarDir).filter((name) => /^opencode(?:-[a-z0-9_-]+)?(?:\.exe)?$/.test(name)) : [];
+  const names = existsSync(sidecarDir) ? readdirSync(sidecarDir).filter((name) => /^opencode2?(?:-[a-z0-9_-]+)?(?:\.exe)?$/.test(name)) : [];
   const hashes = [...new Set(names.map((name) => createHash("sha256").update(readFileSync(join(sidecarDir, name))).digest("hex")))].sort();
-  if (hashes.length < 1 || hashes.length > 4) throw new Error(`Expected one engine per architecture in ${sidecarDir}, found ${names.length} file(s) with ${hashes.length} different content(s)`);
+  if (hashes.length < 1 || hashes.length > 8) throw new Error(`Expected one engine per architecture in ${sidecarDir}, found ${names.length} file(s) with ${hashes.length} different content(s)`);
   return hashes.join(",");
 }
 

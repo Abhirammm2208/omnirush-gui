@@ -47,6 +47,9 @@ try {
     throw new Error("Packaged sidecar unexpectedly contains the generic opencode alias");
   }
   run("sidecar", sidecar, ["--version"], 10_000, {}, output);
+  const sidecarV2 = join(resources, `sidecars/opencode2-${targetTriple}`);
+  accessSync(sidecarV2, constants.X_OK);
+  run("sidecar-v2", sidecarV2, ["--version"], 10_000, {}, output);
   const embedded = pathToFileURL(join(archive, "server/dist/embedded.js")).href;
   run("server-import", binary, ["--input-type=module", "-e",
     `const server = await import(${JSON.stringify(embedded)}); if (typeof server.startEmbeddedServer !== "function") throw new Error("Missing embedded server export");`],

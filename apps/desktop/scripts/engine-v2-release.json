@@ -1,0 +1,36 @@
+{
+  "repo": "omnirush-ai/omnirush-gui",
+  "tag": "engine-2.0.32-r2",
+  "version": "2.0.32",
+  "origin": "OmniRush.ai's build of OpenCode 2.0.32 (engine-2.0.32-r2, the archives the CLI pins), copied to a public pre-release of this repo that is never marked latest. Until it is uploaded, set OMNIRUSH_ENGINE_ARCHIVE_DIR to a folder holding these archives.",
+  "license": {
+    "name": "LICENSE-opencode-MIT",
+    "sha256": "625f0f619133f89bbbb2abe37369613dfa1885eba1e50d02170deb62bb42cb6b"
+  },
+  "assets": {
+    "aarch64-apple-darwin": {
+      "name": "omnirush-engine-darwin-arm64-2.0.32.tar.gz",
+      "sha256": "f4a968d5c07703a49c64427bd0632707b0c0151a9c78a8f7382626bc2aec0d49"
+    },
+    "x86_64-apple-darwin": {
+      "name": "omnirush-engine-darwin-x64-2.0.32.tar.gz",
+      "sha256": "f7a008de7c170e2917918a8647b027ed9f6a4eaadee289b05ce9b82385122e24"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "name": "omnirush-engine-linux-x64-2.0.32.tar.gz",
+      "sha256": "b1cfaf8d6f260671d92d45082b73f0b6a675824a5cce9fab533c56038d2b5b58"
+    },
+    "aarch64-unknown-linux-gnu": {
+      "name": "omnirush-engine-linux-arm64-2.0.32.tar.gz",
+      "sha256": "2a3279dc0610009042aa262577caf9876041a7c30ea456073f67adf4091bc1e6"
+    },
+    "x86_64-pc-windows-msvc": {
+      "name": "omnirush-engine-win32-x64-2.0.32.tar.gz",
+      "sha256": "918699dd8e9faaf965fa9463f4ff656bce03abbe40ef27805bb0134df1705c14"
+    },
+    "aarch64-pc-windows-msvc": {
+      "name": "omnirush-engine-win32-arm64-2.0.32.tar.gz",
+      "sha256": "26a2a867481d603bd7be781471362ae9ed3cc9fbed68629848c5dd260d248066"
+    }
+  }
+}

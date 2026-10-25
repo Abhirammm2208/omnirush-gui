@@ -77,24 +77,10 @@ function testConfig(root: string): ServerConfig {
   };
 }
 
-test("keeps persisted engine v2 preview state when the override is unset", () => {
-  const persisted = { enabled: true, chatRouting: false };
-  expect(resolveInitialEngineV2PreviewState({}, persisted)).toEqual(persisted);
-});
-
-test("enables engine v2 preview and chat routing when the override is 1", () => {
-  expect(resolveInitialEngineV2PreviewState(
-    { OMNIRUSH_ENGINE_V2_PREVIEW: "1" },
-    { enabled: false, chatRouting: false },
-  )).toEqual({ enabled: true, chatRouting: true });
-});
-
-test("keeps persisted engine v2 preview state for an invalid override", () => {
-  const persisted = { enabled: false, chatRouting: true };
-  expect(resolveInitialEngineV2PreviewState(
-    { OMNIRUSH_ENGINE_V2_PREVIEW: "invalid" },
-    persisted,
-  )).toEqual(persisted);
+test("the 2.x engine runs every chat, whatever an earlier preview setting said", () => {
+  expect(resolveInitialEngineV2PreviewState({}, { enabled: false, chatRouting: false })).toEqual({ enabled: true, chatRouting: true });
+  expect(resolveInitialEngineV2PreviewState({ OMNIRUSH_ENGINE_V2_PREVIEW: "0" })).toEqual({ enabled: true, chatRouting: true });
+  expect(resolveInitialEngineV2PreviewState({ OMNIRUSH_ENGINE_V2_PREVIEW: "sidecar" })).toEqual({ enabled: true, chatRouting: false });
 });
 
 test("round trips enabled and chat routing state and defaults corrupt state", async () => {
@@ -111,18 +97,13 @@ test("round trips enabled and chat routing state and defaults corrupt state", as
   }
 });
 
-test("persists chat routing and includes it in preview status without starting the engine", async () => {
+test("the 2.x engine cannot be turned off", async () => {
   const root = await mkdtemp(join(tmpdir(), "omnirush-engine-v2-preview-"));
-  const config = testConfig(root);
-  const preview = createEngineV2Preview({ config });
+  const preview = createEngineV2Preview({ config: testConfig(root), deferStart: true });
   try {
-    expect(preview.status().chatRouting).toBe(false);
-    const status = await preview.setChatRouting(true);
-    expect(status.chatRouting).toBe(true);
-    expect(status.enabled).toBe(false);
-    expect(status.running).toBe(false);
-    expect(preview.connection()).toBeUndefined();
-    expect(readEngineV2PreviewState(config)).toEqual({ enabled: false, chatRouting: true });
+    expect(preview.status()).toMatchObject({ enabled: true, chatRouting: true });
+    await expect(preview.setEnabled(false)).rejects.toThrow(/cannot be turned off/);
+    await expect(preview.setChatRouting(false)).rejects.toThrow(/cannot be turned off/);
   } finally {
     await preview.stop();
     await rm(root, { recursive: true, force: true });
