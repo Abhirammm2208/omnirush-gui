@@ -23,7 +23,8 @@ import { isReleaseBuild } from "./release-guard.js";
 import { webSearchSetting } from "./web-search.js";
 import { buildOmniRushRuntimeConfigObject } from "./omnirush-runtime-config.js";
 import { OMNIRUSH_PROVIDER_ID } from "./provider-lock/provider-lock.mjs";
-import { desiredV2Mcp, v2McpGate } from "./engine-v2-mcp.js";
+import { CLOUD_MCP_NAME, cloudMcpEntry, desiredV2Mcp, v2McpGate } from "./engine-v2-mcp.js";
+import { runtimeMcpMap } from "./runtime-opencode-config-store.js";
 import { engineDataDir } from "./engine-data-home.js";
 import { computerUseEngineEnv } from "./computer-use/desktop.js";
 import { engineV2Root, readMigratedSessions, seedV2StoreFromV1 } from "./engine-v2-migration.js";
@@ -307,6 +308,29 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
   const mcpInFlight = new Map<string, Promise<void>>();
   const mcpWorkspaces = new Map<string, string>();
 
+  /** The org's cloud connector, as the app persisted it (engine-v2-mcp.ts). */
+  const cloudConnector = async () => cloudMcpEntry(runtimeMcpMap(await readGlobalRuntimeOpencodeConfig(config).catch(() => ({}))));
+
+  /**
+   * The engine's gate is fixed at its start: when the org's cloud connector is turned on or off, the engine
+   * starts again with the new gate, once no chat runs in any open folder.
+   * shortcut: a busy engine keeps its gate until the next connector change or app start.
+   */
+  async function regateCloudWhenIdle(): Promise<void> {
+    const active = sidecar;
+    if (!active || Boolean(await cloudConnector()) === active.mcpGate.includes(CLOUD_MCP_NAME)) return;
+    for (const directory of mcpWorkspaces.keys()) {
+      const running = await active.fetchJson("/api/session/active", { directory, timeoutMs: 5_000 }).catch(() => null);
+      if (!running || !isRecord(running.json) || !isRecord(running.json.data) || Object.keys(running.json.data).length > 0) {
+        lastError = "The cloud connector applies once no chat is running.";
+        return;
+      }
+    }
+    if (sidecar !== active) return;
+    await closeSidecar();
+    await start();
+  }
+
   async function syncWorkspaceMcp(workspaceId: string, directory: string): Promise<void> {
     mcpWorkspaces.set(directory, workspaceId);
     // Serialize each location, then re-read authoritative state. A queued call
@@ -318,7 +342,7 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
       if (!active) throw new Error("OmniRush v2 is not running");
       if (mcpCleaned.has(directory)) return;
       // The allowed servers (engine-v2-mcp.ts) through the engine's runtime MCP API; every other one goes.
-      const desired = await desiredV2Mcp(runtimeStorageDir(config), directory, active.env, active.mcpGate);
+      const desired = await desiredV2Mcp(runtimeStorageDir(config), directory, active.env, active.mcpGate, await cloudConnector());
       const current = await active.fetchJson("/api/mcp", { directory, timeoutMs: 10_000 });
       if (current.status !== 200 || !isRecord(current.json) || !Array.isArray(current.json.data)) {
         throw new Error("OmniRush v2 MCP status is unavailable");
@@ -477,7 +501,7 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
       },
       permissions: async () => executionRules((await readGlobalRuntimeOpencodeConfig(config)).managedPolicy?.execution),
       webSearch: () => webSearchSetting({ env: process.env, stateDir: runtimeStorageDir(config) }).enabled,
-      mcpGate: v2McpGate(runtimeStorageDir(config), { ...process.env, ...computerUseEngineEnv(runtimeStorageDir(config)) }),
+      mcpGate: v2McpGate(runtimeStorageDir(config), { ...process.env, ...computerUseEngineEnv(runtimeStorageDir(config)) }, Boolean(await cloudConnector())),
     });
     sidecar = managed;
     if (!enabled || !allowRunning) {
@@ -492,6 +516,7 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
       const unsubscribeConfig = onRuntimeOpencodeConfigWrite((_writeConfig, workspaceId) => {
         const global = isEngineGlobalRuntimeConfigId(workspaceId);
         if (global) scheduleMirror();
+        if (global) void regateCloudWhenIdle();
         // Connections installed through OmniRush.ai also update already-open
         // locations while a conversation is active. Request admission joins
         // the same serialized reconciliation rather than racing it.

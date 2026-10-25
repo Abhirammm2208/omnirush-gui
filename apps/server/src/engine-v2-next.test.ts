@@ -206,3 +206,33 @@ z.close()
   const plain = { text: "no office", files: [{ uri: "data:image/png;base64,AA==", name: "a.png" }] };
   expect(await convertOfficeAttachments(plain, dir)).toBe(plain);
 }));
+
+test("the org's cloud connector reaches the 2.x engine only when it is set up and gated", () => withDir(async (dir) => {
+  const { cloudMcpEntry, desiredV2Mcp, v2McpGate, CLOUD_MCP_NAME } = await import("./engine-v2-mcp.js");
+  const cloud = { type: "remote", url: "https://den.example.com/mcp", headers: { Authorization: "Bearer org-token" }, timeout: 3000 };
+  expect(cloudMcpEntry({ [CLOUD_MCP_NAME]: cloud })).toEqual(cloud);
+  expect(cloudMcpEntry({ [CLOUD_MCP_NAME]: { ...cloud, enabled: false } })).toBeNull();
+  expect(cloudMcpEntry({ [CLOUD_MCP_NAME]: { ...cloud, url: "http://den.example.com/mcp" } })).toBeNull();
+  expect(cloudMcpEntry({ [CLOUD_MCP_NAME]: { ...cloud, url: "http://127.0.0.1:8790/mcp" } })).not.toBeNull();
+  expect(cloudMcpEntry({})).toBeNull();
+  expect(v2McpGate(dir)).not.toContain(CLOUD_MCP_NAME);
+  expect(v2McpGate(dir, process.env, true)).toContain(CLOUD_MCP_NAME);
+  const root = join(dir, "proj");
+  const engineEnv = { OPENCODE_PASSWORD: "pw" };
+  expect(await desiredV2Mcp(dir, root, engineEnv, [CLOUD_MCP_NAME], cloud)).toEqual({
+    [CLOUD_MCP_NAME]: { type: "remote", url: "https://den.example.com/mcp", headers: { Authorization: "Bearer org-token" }, codemode: false, timeout: { startup: 3000, catalog: 3000, execution: 3000 } },
+  });
+  expect(await desiredV2Mcp(dir, root, engineEnv, [], cloud)).toEqual({});
+}));
+
+test("archived chats are the app's own flag, applied to session reads", () => withDir(async (dir) => {
+  const { archivedAt, setArchived, withArchived } = await import("./archived-chats.js");
+  expect(archivedAt(dir, "ses_a")).toBeUndefined();
+  setArchived(dir, "ses_a", 1_700);
+  expect(archivedAt(dir, "ses_a")).toBe(1_700);
+  expect(withArchived(dir, { id: "ses_a", time: { created: 1 } })).toEqual({ id: "ses_a", time: { created: 1, archived: 1_700 } });
+  // The engine's own value never wins over the app's flag.
+  expect(withArchived(dir, { id: "ses_b", time: { created: 1, archived: 5 } })).toEqual({ id: "ses_b", time: { created: 1 } });
+  setArchived(dir, "ses_a", null);
+  expect(withArchived(dir, { id: "ses_a", time: { created: 1 } })).toEqual({ id: "ses_a", time: { created: 1 } });
+}));
