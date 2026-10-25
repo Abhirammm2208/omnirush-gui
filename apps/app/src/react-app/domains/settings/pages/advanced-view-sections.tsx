@@ -7,8 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import type { EngineV2PreviewStatus, OmniRushCloudMcpHealth, OmniRushRuntimeConfigStatus, OmniRushServerStatus } from "@/app/lib/omnirush-server";
+import type { OmniRushCloudMcpHealth, OmniRushRuntimeConfigStatus, OmniRushServerStatus } from "@/app/lib/omnirush-server";
 import { sanitizeCloudMcpHealthDiagnostic, sanitizeDiagnosticRecord } from "@/app/lib/diagnostic-sanitizer";
 import {
   DEFAULT_DEN_API_BASE_URL,
@@ -768,114 +767,6 @@ export function AdvancedFeatureFlagsSection(props: AdvancedFeatureFlagsSectionPr
             />
           </LayoutSectionItemHeaderActions>
         </LayoutSectionItemHeader>
-      </LayoutSectionItem>
-    </LayoutSection>
-  );
-}
-
-interface AdvancedEngineV2PreviewSectionProps {
-  getStatus: () => Promise<EngineV2PreviewStatus>;
-  setEnabled: (enabled: boolean) => Promise<EngineV2PreviewStatus>;
-  setChatRouting: (enabled: boolean) => Promise<EngineV2PreviewStatus>;
-}
-
-export function AdvancedEngineV2PreviewSection(props: AdvancedEngineV2PreviewSectionProps) {
-  const [status, setStatus] = useState<EngineV2PreviewStatus | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let mounted = true;
-    void props.getStatus().then((nextStatus) => {
-      if (mounted) {
-        setStatus(nextStatus);
-        setLoadError(null);
-      }
-    }).catch((error: unknown) => {
-      if (mounted) setLoadError(error instanceof Error ? error.message : "Failed to load omnirush.ai v2 engine preview status.");
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [props.getStatus]);
-
-  useEffect(() => {
-    if (!status?.enabled) return;
-    let mounted = true;
-    const interval = window.setInterval(() => {
-      void props.getStatus().then((nextStatus) => {
-        if (mounted) setStatus(nextStatus);
-      }).catch(() => undefined);
-    }, 5_000);
-    return () => {
-      mounted = false;
-      window.clearInterval(interval);
-    };
-  }, [props.getStatus, status?.enabled]);
-
-  const selectEngine = async (engine: "v1" | "v2") => {
-    setBusy(true);
-    setLoadError(null);
-    try {
-      if (engine === "v2") {
-        setStatus(await props.setEnabled(true));
-        setStatus(await props.setChatRouting(true));
-      } else {
-        setStatus(await props.setChatRouting(false));
-        setStatus(await props.setEnabled(false));
-      }
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Failed to update omnirush.ai v2 engine preview.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const skippedCount = status?.skippedProviderIds.length ?? 0;
-  const selectedEngine = status?.enabled && status.chatRouting ? "v2" : "v1";
-  const runningStatus = status?.enabled && status.running
-    ? `Running v${status.version ?? "unknown"} (pid ${status.pid ?? "unknown"}) — ${status.mirroredProviderIds.length} providers mirrored, ${status.catalogModelIds.length} models${skippedCount ? `, ${skippedCount} skipped` : ""}${status.chatRouting ? " — chat routed to v2" : ""}`
-    : null;
-  const error = (status?.enabled && !status.running ? status.lastError : null) ?? loadError;
-  const starting = status?.enabled && !status.running && !error ? "Starting the omnirush.ai v2 sidecar…" : null;
-
-  return (
-    <LayoutSection id="advanced-experimental-engine">
-      <LayoutSectionHeader>
-        <LayoutSectionTitle>Experimental engine</LayoutSectionTitle>
-      </LayoutSectionHeader>
-
-      <LayoutSectionItem>
-        <LayoutSectionItemHeader>
-          <LayoutSectionItemTitle>Chat engine</LayoutSectionItemTitle>
-          <LayoutSectionItemDescription>
-            Engine v1 is the default. Engine v2 (preview) runs as a parallel sidecar with live provider updates and no engine reloads; sessions created on one engine stay in that engine's list.
-          </LayoutSectionItemDescription>
-          <LayoutSectionItemHeaderActions>
-            <ToggleGroup
-              aria-label="Chat engine"
-              value={[selectedEngine]}
-              variant="outline"
-              disabled={busy || !status || !isDesktopRuntime()}
-              onValueChange={(value) => {
-                const engine = value[0];
-                if ((engine === "v1" || engine === "v2") && engine !== selectedEngine) {
-                  void selectEngine(engine);
-                }
-              }}
-            >
-              <ToggleGroupItem value="v1" data-engine="v1">
-                Engine v1 (default)
-              </ToggleGroupItem>
-              <ToggleGroupItem value="v2" data-engine="v2">
-                Engine v2 (preview)
-              </ToggleGroupItem>
-            </ToggleGroup>
-          </LayoutSectionItemHeaderActions>
-        </LayoutSectionItemHeader>
-        {runningStatus ? <div className="text-xs text-gray-11">{runningStatus}</div> : null}
-        {starting ? <div className="text-xs text-gray-11">{starting}</div> : null}
-        {error ? <div className="text-xs text-red-11">{error}</div> : null}
       </LayoutSectionItem>
     </LayoutSection>
   );

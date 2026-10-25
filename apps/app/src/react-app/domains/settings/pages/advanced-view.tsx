@@ -15,7 +15,6 @@ import type { useDenSession } from "../cloud/use-den-session";
 import { advancedLocalReducer, initialAdvancedLocalState } from "./advanced-view-state";
 import {
   AdvancedDeveloperSection,
-  AdvancedEngineV2PreviewSection,
   AdvancedCloudMcpDiagnosticsSection,
   AdvancedOrganizationServerSection,
   AdvancedRuntimeConfigSourcesSection,
@@ -213,12 +212,6 @@ export function AdvancedView(props: AdvancedViewProps) {
           configStatusBusy={configStatusBusy}
           configStatusError={configStatusError}
           onRefresh={refreshRuntimeConfigStatus}
-        />
-
-        <AdvancedEngineV2PreviewSection
-          getStatus={props.getEngineV2PreviewStatus}
-          setEnabled={props.setEngineV2PreviewEnabled}
-          setChatRouting={props.setEngineV2PreviewChatRouting}
         />
 
         <AdvancedWorkspaceRunModeSection />

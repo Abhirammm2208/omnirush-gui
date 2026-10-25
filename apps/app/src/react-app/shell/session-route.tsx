@@ -3351,10 +3351,10 @@ export function SessionRoute() {
         // OpenCode directory. Chat-first creation still needs a session for
         // its supplied prompt; ordinary creation lands on the New task state.
         const session = createdOnServer && sessionBaseUrl && sessionToken && (firstTaskPrompt || firstTaskAttachments.length > 0)
-          ? await createClient(
-              `${(buildOmniRushWorkspaceBaseUrl(sessionBaseUrl, targetWorkspaceId) ?? sessionBaseUrl).replace(/\/+$/, "")}/opencode`,
+          ? await createClientV2(
+              `${(buildOmniRushWorkspaceBaseUrl(sessionBaseUrl, targetWorkspaceId) ?? sessionBaseUrl).replace(/\/+$/, "")}/opencode2`,
               workspacePath || undefined,
-              { token: sessionToken, mode: "omnirush" },
+              { token: sessionToken },
             ).session.create({ directory: workspacePath || undefined })
               .then((result) => unwrap(result))
           : null;
@@ -3420,7 +3420,7 @@ export function SessionRoute() {
     const taskWorkspace = created.workspace;
     await refreshRouteState();
     void queryClient.invalidateQueries({ queryKey: workspaceTasksQueryKey(workspaceId) });
-    const opencodeUrl = `${(buildOmniRushWorkspaceBaseUrl(baseUrl, taskWorkspace.id) ?? baseUrl).replace(/\/+$/, "")}/opencode`;
+    const opencodeUrl = `${(buildOmniRushWorkspaceBaseUrl(baseUrl, taskWorkspace.id) ?? baseUrl).replace(/\/+$/, "")}/opencode2`;
     const createEngineClient = isOpencodeV2BaseUrl(opencodeUrl) ? createClientV2 : createClient;
     const engine = createEngineClient(opencodeUrl, taskWorkspace.path || undefined, { token, mode: "omnirush" });
     const session = unwrap(await engine.session.create({ directory: taskWorkspace.path || undefined }));
