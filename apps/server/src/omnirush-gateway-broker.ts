@@ -106,8 +106,11 @@ type BrokerOptions = {
   onCapturePolicy?: (sessionId: string, policy: string) => void;
   /** What a chat's binding says: verified, or bound late and why (a late binding is never verified). */
   onBinding?: (sessionId: string, binding: { verified: boolean; lateReason?: string }) => void;
-  /** Strict sessions under enforce: a chat's uploads are held from its bind until it is confirmed ("refused" is kept across restarts). */
-  onUploadHold?: (sessionId: string, state: "pending" | "refused" | "confirmed") => void;
+  /**
+   * Strict sessions (enforce, or the switch not known yet): a chat's uploads are held from its first model request
+   * until its binding is confirmed; `seq` is this broker's order of the calls for the chat.
+   */
+  onUploadHold?: (sessionId: string, state: "pending" | "refused" | "confirmed", seq: number) => void;
   /** The last strict_sessions answer per server, kept on disk: it stands while capabilities cannot be fetched. */
   strictStateFile?: string;
   /** How long a strict-session bind may take (BIND_TIMEOUT_MS unless a test shrinks it). */
@@ -162,6 +165,19 @@ export const UPDATE_REQUIRED_CODE = "update_required";
  * frame. Comment lines such as `: keepalive` carry no data and are never
  * terminal.
  */
+/** The uploader's "every held chat" (a strict switch known not to enforce releases them all). */
+export const ALL_HELD_CHATS = "*";
+
+/** How much of an answer's end is kept to tell whether it ran to its normal end (strict switch unknown). */
+const STRICT_TAIL_CHARS = 64 * 1024;
+
+/** Whether an answer ran to its normal end: no error or refusal event, and a completed event (or a JSON body). */
+export function answerCompleted(tail: string, contentType: string): boolean {
+  if (/"type"\s*:\s*"(?:error|response\.failed|response\.incomplete)"/.test(tail) || /^event:\s*error\b/m.test(tail)) return false;
+  if (!contentType.includes("event-stream")) return tail.trim().length > 0;
+  return /"type"\s*:\s*"(?:response\.completed|response\.done|message_stop)"|^data:\s*\[DONE\]/m.test(tail);
+}
+
 const TERMINAL_RESPONSE_EVENTS = new Set(["response.completed", "response.incomplete", "response.failed"]);
 const TERMINAL_OR_ERROR_MARKER = /"(?:response\.(?:completed|incomplete|failed)|error)"/;
 /** An event larger than this passes through unread; the marker scan below then decides terminality. */
@@ -1311,6 +1327,7 @@ export class OmniRushGatewayBroker {
   private readonly onUploadHold?: BrokerOptions["onUploadHold"];
   /** Chats whose binding is confirmed in this process (bound, or not bindable): their uploads may go out. */
   private readonly bindsConfirmed = new Set<string>();
+  private holdSeq = 0;
   /** Strict sessions: each chat binds its model and mode once per process (model-modes/strict-sessions.mjs). */
   private readonly reasoningSummaryFor: (model: string) => boolean | Promise<boolean>;
   private readonly clientHeader: string | null;
@@ -2082,6 +2099,12 @@ export class OmniRushGatewayBroker {
     const strictHeader = strict?.header ?? (this.strictUnknown() ? STRICT_SESSION_HEADER : null);
     const unbound = strict ? await this.strictBindRefusal(strict, request, path, body) : null;
     if (unbound) return unbound;
+    // Switch not known: the chat is held from this request until an answer that ran to its end confirms it.
+    const unknownSession = !strict && strictHeader && body !== undefined && (path === "responses" || path === "responses/compact")
+      ? request.headers.get("x-omnirush-session-id")
+      : null;
+    if (unknownSession && !this.bindsConfirmed.has(unknownSession)) this.uploadHold(unknownSession, "pending");
+    const confirmed = (response: Response) => (unknownSession ? this.confirmOnCompletion(response, unknownSession) : response);
     const forwardedBody = path === "responses" && body !== undefined
       ? await withReasoningSummary(body, this.reasoningSummaryFor)
       : body;
@@ -2094,7 +2117,7 @@ export class OmniRushGatewayBroker {
       if (!this.state) break;
       try {
         const response = await this.forward(request, path, forwardedBody, attempt === 0 ? accessToken : this.state.accessToken, requestId, strictHeader);
-        return await this.strictRetry(response, async () => {
+        return confirmed(await this.strictRetry(response, async () => {
           // The gateway could not confirm the chat: it is bound again before the same request goes up.
           const session = request.headers.get("x-omnirush-session-id");
           if (strict && session) {
@@ -2103,7 +2126,7 @@ export class OmniRushGatewayBroker {
             if (refused) return refused;
           }
           return this.forward(request, path, forwardedBody, this.state?.accessToken, requestId, strictHeader);
-        }, request.signal);
+        }, request.signal));
       } catch (error) {
         if (request.signal.aborted) throw error;
         failure = fetchFailure(error);
@@ -2249,11 +2272,7 @@ export class OmniRushGatewayBroker {
       try { this.onBinding?.(session, { verified: binding.verified === true && !late, ...(late ? { lateReason: late } : {}) }); } catch { /* a listener never breaks the request */ }
     }
     if (!("refused" in outcome)) {
-      if (!this.bindsConfirmed.has(session)) {
-        this.bindsConfirmed.add(session);
-        while (this.bindsConfirmed.size > 4000) this.bindsConfirmed.delete(this.bindsConfirmed.values().next().value!);
-        if (enforce) this.uploadHold(session, "confirmed");
-      }
+      this.bindConfirmed(session, enforce);
       return null;
     }
     if (enforce && !this.bindsConfirmed.has(session)) this.uploadHold(session, "refused");
@@ -2264,7 +2283,39 @@ export class OmniRushGatewayBroker {
   }
 
   private uploadHold(sessionId: string, state: "pending" | "refused" | "confirmed"): void {
-    try { this.onUploadHold?.(sessionId, state); } catch { /* a listener never breaks the request */ }
+    this.holdSeq += 1;
+    try { this.onUploadHold?.(sessionId, state, this.holdSeq); } catch { /* a listener never breaks the request */ }
+  }
+
+  /** The chat's binding is confirmed in this process: its held uploads may go out. */
+  private bindConfirmed(sessionId: string, release: boolean): void {
+    if (this.bindsConfirmed.has(sessionId)) return;
+    this.bindsConfirmed.add(sessionId);
+    while (this.bindsConfirmed.size > 4000) this.bindsConfirmed.delete(this.bindsConfirmed.values().next().value!);
+    if (release) this.uploadHold(sessionId, "confirmed");
+  }
+
+  /**
+   * Switch not known yet: the gateway binds the chat itself on its first request (the strict header). Only an
+   * answer that ran to its normal end confirms it; an error, a refusal, a non-2xx (426 included) or a stream cut
+   * short does not, and the chat's uploads stay held.
+   */
+  private confirmOnCompletion(response: Response, sessionId: string): Response {
+    if (!response.ok || !response.body || this.bindsConfirmed.has(sessionId)) return response;
+    const contentType = response.headers.get("content-type") ?? "";
+    const decoder = new TextDecoder();
+    let tail = "";
+    const watch = new TransformStream<Uint8Array, Uint8Array>({
+      transform: (chunk, controller) => {
+        tail = (tail + decoder.decode(chunk, { stream: true })).slice(-STRICT_TAIL_CHARS);
+        controller.enqueue(chunk);
+      },
+      flush: () => {
+        tail = (tail + decoder.decode()).slice(-STRICT_TAIL_CHARS);
+        if (answerCompleted(tail, contentType)) this.bindConfirmed(sessionId, true);
+      },
+    });
+    return new Response(response.body.pipeThrough(watch), { status: response.status, statusText: response.statusText, headers: response.headers });
   }
 
   /**
@@ -2331,6 +2382,8 @@ export class OmniRushGatewayBroker {
   private rememberStrict(gatewayUrl: string, capabilities: TraceCapabilities): void {
     this.strictBind = strictSessions(capabilities);
     this.strictOrigin = originOf(gatewayUrl);
+    // The server holds nothing back (strict off or observe): no chat's uploads wait for a binding any more.
+    if (this.strictBind?.mode !== "enforce") this.uploadHold(ALL_HELD_CHATS, "confirmed");
     if (!this.strictStateFile) return;
     try {
       mkdirSync(dirname(this.strictStateFile), { recursive: true, mode: 0o700 });

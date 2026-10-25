@@ -25,7 +25,7 @@ export type CaptureCalls = {
   boxSession: [sessionId: string, box: BoxCaptureInfo | null];
   sessionPolicy: [sessionId: string];
   pinPolicy: [sessionId: string, policy: string];
-  holdUploads: [sessionId: string, state: "pending" | "refused" | "confirmed"];
+  holdUploads: [sessionId: string, state: "pending" | "refused" | "confirmed", seq: number];
   permissionMode: [mode: ApprovalMode | null];
   recordTrace: [sessionId: string, type: string, data?: unknown];
   flushTrace: [sessionId: string, finalTrace?: unknown];

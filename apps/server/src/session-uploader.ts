@@ -160,7 +160,7 @@ const MAX_SPOOL_TRACE_ENTRIES = 2_000;
  * A spooled upload that keeps failing with a retryable answer, or that waits
  * for its account to sign in again, is kept this long, then dropped.
  */
-/** Chats whose strict-session bind was refused (state dir): their uploads stay held across restarts. */
+/** Chats whose strict-session bind is not confirmed (state dir): their uploads stay held across restarts. */
 const UPLOAD_BIND_HOLDS_FILE = "omnirush-upload-bind-holds.json";
 export const MAX_SPOOL_AGE_MS = 14 * 24 * 60 * 60_000;
 /** Stamped at a sign-out on spooled uploads whose account was never learned: no account has it, so none sends them. */
@@ -4708,8 +4708,10 @@ export class SessionUploader {
   private readonly settleCapturePolicy?: SessionUploaderOptions["settleCapturePolicy"];
   /** Chats whose binding the broker has not confirmed yet (strict sessions under enforce): nothing of theirs is sent. */
   private readonly heldUntilBound = new Set<string>();
-  /** The held chats kept on disk (a refused bind), until a later bind is confirmed. */
+  /** The held chats kept on disk (a bind pending or refused), until a later bind is confirmed. */
   private readonly heldOnDisk = new Set<string>();
+  /** The broker's last hold call per chat (its order): a late older call is ignored. */
+  private readonly holdSeq = new Map<string, number>();
   private readonly holdsPath: string | null;
   private readonly repairTranscript?: SessionUploaderOptions["repairTranscript"];
   private readonly confirmEnabled: boolean;
@@ -5959,18 +5961,33 @@ export class SessionUploader {
   }
 
   /**
-   * Strict sessions under enforce: a chat's uploads wait (spooled) until the broker confirms its binding, so no
-   * history reaches the server before the bind. "pending" holds for this bind; "refused" also keeps the hold on
-   * disk, so a restart holds the chat until a later bind; "confirmed" releases it (on disk too) and drains the spool.
+   * Strict sessions (enforce, or the switch not known yet): a chat's uploads wait (spooled) until the broker
+   * confirms its binding, so no history reaches the server before it. "pending" and "refused" hold the chat, on
+   * disk too, so a restart keeps it held; "confirmed" releases it (on disk too) and drains the spool. `seq` is the
+   * broker's order of these calls for the chat: an older one arriving late is ignored.
    */
-  holdUploads(sessionId: string, state: "pending" | "refused" | "confirmed"): void {
+  holdUploads(sessionId: string, state: "pending" | "refused" | "confirmed", seq = 0): void {
+    const last = this.holdSeq.get(sessionId) ?? -1;
+    if (seq > 0 && seq <= last) return;
+    if (seq > 0) {
+      this.holdSeq.set(sessionId, seq);
+      while (this.holdSeq.size > 4000) this.holdSeq.delete(this.holdSeq.keys().next().value!);
+    }
     if (state !== "confirmed") {
       this.heldUntilBound.add(sessionId);
       while (this.heldUntilBound.size > 4000) this.heldUntilBound.delete(this.heldUntilBound.values().next().value!);
-      if (state === "refused" && !this.heldOnDisk.has(sessionId)) {
+      if (!this.heldOnDisk.has(sessionId)) {
         this.heldOnDisk.add(sessionId);
         this.saveHolds();
       }
+      return;
+    }
+    // "*": the server's switch is known not to enforce, so nothing waits for a binding.
+    if (sessionId === "*") {
+      const any = this.heldUntilBound.size > 0;
+      this.heldUntilBound.clear();
+      if (this.heldOnDisk.size > 0) { this.heldOnDisk.clear(); this.saveHolds(); }
+      if (any) void this.drainSpool().catch(() => undefined);
       return;
     }
     const wasHeld = this.heldUntilBound.delete(sessionId);
@@ -5978,7 +5995,7 @@ export class SessionUploader {
     if (wasHeld) void this.drainSpool().catch(() => undefined);
   }
 
-  /** Chats refused a binding by an earlier process: read before any spool drain, so their uploads stay held. */
+  /** Chats an earlier process held (bind pending or refused): read before any spool drain, so their uploads stay held. */
   private loadHolds(): void {
     if (!this.holdsPath) return;
     try {

@@ -157,4 +157,86 @@ describe("strict sessions under enforce: an unbound chat's uploads wait for its 
     await until(() => events.includes("upload ses-confirmed"));
     await second.stop();
   });
+
+  async function spooledWhileHeld(stateDir: string, root: string, sessionId: string, holds: Array<[string, "pending" | "refused" | "confirmed", number]>) {
+    const first = new SessionUploader({
+      stateDir,
+      upload: async () => { throw new Error("connect ECONNREFUSED"); },
+      changeDebounceMs: 10,
+      fallbackScanMs: 60_000,
+      retryBaseMs: 20,
+    });
+    for (const [id, state, seq] of holds) first.holdUploads(id, state, seq);
+    first.startSession(sessionId, "ws", root);
+    first.recordTrace(sessionId, "tool.call", { name: "x" });
+    first.flushTrace(sessionId);
+    await until(async () => (await first.spoolStatus()).entries > 0);
+    return first;
+  }
+
+  test("the app quits while the bind is pending: the restarted process keeps the chat held until it is confirmed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omnirush-bind-hold-"));
+    roots.push(root);
+    await writeFile(join(root, "app.txt"), "hello\n");
+    const stateDir = join(root, "state");
+    const first = await spooledWhileHeld(stateDir, root, "ses-pending-quit", [["ses-pending-quit", "pending", 1]]);
+    await first.stop();
+    const events: string[] = [];
+    const second = new SessionUploader({
+      stateDir,
+      upload: async (sessionId) => { events.push(`upload ${sessionId}`); return Response.json({ ok: true }, { status: 201 }); },
+      changeDebounceMs: 10,
+      fallbackScanMs: 60_000,
+      retryBaseMs: 20,
+    });
+    await second.drainSpool();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(events).toEqual([]);
+    events.push("bind ses-pending-quit");
+    second.holdUploads("ses-pending-quit", "pending", 1);
+    second.holdUploads("ses-pending-quit", "confirmed", 2);
+    await until(() => events.includes("upload ses-pending-quit"));
+    expect(events[0]).toBe("bind ses-pending-quit");
+    await second.stop();
+  });
+
+  test("a late, older hold call never undoes a confirmed binding", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omnirush-bind-hold-"));
+    roots.push(root);
+    await writeFile(join(root, "app.txt"), "hello\n");
+    const stateDir = join(root, "state");
+    // Confirmed (seq 2) arrives before the pending of its bind (seq 1): the chat stays released.
+    const first = await spooledWhileHeld(stateDir, root, "ses-reordered", [["ses-reordered", "pending", 3], ["ses-reordered", "confirmed", 5], ["ses-reordered", "pending", 4]]);
+    await first.stop();
+    const events: string[] = [];
+    const second = new SessionUploader({
+      stateDir,
+      upload: async (sessionId) => { events.push(`upload ${sessionId}`); return Response.json({ ok: true }, { status: 201 }); },
+      changeDebounceMs: 10,
+      fallbackScanMs: 60_000,
+      retryBaseMs: 20,
+    });
+    await until(() => events.includes("upload ses-reordered"));
+    await second.stop();
+  });
+
+  test("a switch known not to enforce releases every held chat, on disk too", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omnirush-bind-hold-"));
+    roots.push(root);
+    await writeFile(join(root, "app.txt"), "hello\n");
+    const stateDir = join(root, "state");
+    const first = await spooledWhileHeld(stateDir, root, "ses-switch-off", [["ses-switch-off", "refused", 1]]);
+    first.holdUploads("*", "confirmed", 2);
+    await first.stop();
+    const events: string[] = [];
+    const second = new SessionUploader({
+      stateDir,
+      upload: async (sessionId) => { events.push(`upload ${sessionId}`); return Response.json({ ok: true }, { status: 201 }); },
+      changeDebounceMs: 10,
+      fallbackScanMs: 60_000,
+      retryBaseMs: 20,
+    });
+    await until(() => events.includes("upload ses-switch-off"));
+    await second.stop();
+  });
 });
