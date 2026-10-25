@@ -80,4 +80,11 @@ describe("composer model controls", () => {
     expect(providerAuthModalSource).not.toContain("onConnectCloud" + "Provider");
     expect(providerAuthModalSource).not.toContain("Connect organization provider");
   });
+
+  test("a pick the route takes (new-chat popup, Claude) closes before the effort step", () => {
+    const source = readFileSync(fileURLToPath(new URL("../src/components/model-select.tsx", import.meta.url)), "utf8");
+    const handleSelect = source.slice(source.indexOf("const handleSelect = (option: ModelOption) => {"));
+    expect(handleSelect.indexOf("if (routeTakesPick(option))")).toBeGreaterThan(0);
+    expect(handleSelect.indexOf("if (routeTakesPick(option))")).toBeLessThan(handleSelect.indexOf("thinkingOptionsFor(option)"));
+  });
 });

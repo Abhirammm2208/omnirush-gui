@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { focusManager } from "@tanstack/react-query";
 import type { Message, Part, Session, SessionStatus, Todo } from "@opencode-ai/sdk/v2/client";
 
-import { createClient, createPromptMessageID, hasAcceptedPromptMessage, unwrap, type FieldsResult } from "../src/app/lib/opencode";
+import { createClient, createPromptMessageID, hasAcceptedPromptMessage, PromptAdmissionUnknownError, unwrap, type FieldsResult } from "../src/app/lib/opencode";
 import { interruptSessionTurn, sessionNeedsStop, submitAfterInterruption } from "../src/app/lib/opencode-interruption";
 import { createClientV2 } from "../src/app/lib/opencode-v2-adapter";
 import {
@@ -610,6 +610,41 @@ describe("native Stop and follow-up handoff", () => {
       // Only the two aborts; the unknown prompt is never replayed.
       expect(requests.filter((request) => request.method === "POST")).toHaveLength(2);
       await submitAfterInterruption(endpoint.opencodeBaseUrl, root.id, async () => { sends += 1; });
+      expect(sends).toBe(1);
+    });
+  });
+
+  test("v2: a confirmed stop clears an unknown admission without resending it", async () => {
+    const baseUrl = endpoint.opencodeBaseUrl.replace("opencode", "opencode2");
+    const rootID = "ses_v2_unknown_stop";
+    let sends = 0;
+    let stopped = false;
+    await withSessionFetch((request) => {
+      const path = new URL(request.url).pathname;
+      const [, id, action] = path.match(/\/api\/session\/([^/]+)(?:\/([^/]+))?$/) ?? [];
+      if (id === "active") return Response.json({ data: {} });
+      if (!action) return Response.json({ data: { id, title: "Native turn", location: { directory: session.directory }, time: { created: 1, updated: 2 } } });
+      if (action === "message") return Response.json({ data: [
+        { id: "msg_assistant", type: "assistant", time: { created: 2 }, content: [] },
+        { id: "msg_user", type: "user", time: { created: 1 }, content: [] },
+      ] });
+      if (action === "interrupt") return Response.json({ data: { interrupted: true } });
+      throw new Error(`Unexpected v2 request: ${request.method} ${path}`);
+    }, async (requests) => {
+      const client = createClientV2(baseUrl, session.directory, { token: endpoint.token, mode: "omnirush" });
+      // The stuck message: its prompt POST loses its answer while Stop runs.
+      const stuck = submitAfterInterruption(baseUrl, rootID, () => new Promise<never>((_, reject) => setTimeout(() => reject(new PromptAdmissionUnknownError()), 30)));
+      const stuckError = stuck.catch((error: unknown) => error);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await interruptSessionTurn(baseUrl, client, rootID, session.directory, { onStopped: () => { stopped = true; } });
+      expect(await stuckError).toBeInstanceOf(PromptAdmissionUnknownError);
+      expect(stopped).toBe(true);
+      expect(sessionNeedsStop(baseUrl, rootID)).toBe(false);
+      // Only interrupts; the unknown prompt is never replayed.
+      const posts = requests.filter((request) => request.method === "POST").map((request) => new URL(request.url).pathname);
+      expect(posts.length).toBeGreaterThan(0);
+      expect(posts.every((path) => path.endsWith("/interrupt"))).toBe(true);
+      await submitAfterInterruption(baseUrl, rootID, async () => { sends += 1; });
       expect(sends).toBe(1);
     });
   });
