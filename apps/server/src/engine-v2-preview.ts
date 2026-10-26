@@ -27,7 +27,7 @@ import { CLOUD_MCP_NAME, cloudMcpEntry, desiredV2Mcp, v2McpGate } from "./engine
 import { runtimeMcpMap } from "./runtime-opencode-config-store.js";
 import { engineDataDir } from "./engine-data-home.js";
 import { computerUseEngineEnv } from "./computer-use/desktop.js";
-import { engineV2Root, readMigratedSessions, seedV2StoreFromV1 } from "./engine-v2-migration.js";
+import { engineV2Root, importMissingV1Chats, readMigratedSessions, seedV2StoreFromV1 } from "./engine-v2-migration.js";
 import type { ServerConfig } from "./types.js";
 import { boxServiceFor } from "./box/desktop.js";
 import { omnirushBoxNextPluginPath } from "./omnirush-extensions-plugin-path.js";
@@ -525,8 +525,10 @@ export function createEngineV2Preview(options: { config: ServerConfig; env?: Pic
     if (!enabled || !allowRunning) return;
     await mkdir(workspaceDir, { recursive: true });
     // First start next to a 1.x store: back it up and seed the 2.x store from a copy (the 1.x store is kept).
+    // Later, 1.x chats the 2.x store does not have yet (made in a 1.x app after it was seeded) are brought over too.
     try {
-      await seedV2StoreFromV1(rootDir, join(engineDataDir(process.env), "opencode.db"));
+      const v1Db = join(engineDataDir(process.env), "opencode.db");
+      if (!await seedV2StoreFromV1(rootDir, v1Db)) await importMissingV1Chats(rootDir, v1Db);
     } catch (error) {
       lastError = `1.x chats were not brought over: ${errorMessage(error)}`;
     }

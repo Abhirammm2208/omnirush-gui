@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { assertSessionPluginActive, OMNIRUSH_SESSION_PLUGIN_ID } from "./engine-v2-preview.js";
-import { readMigratedSessions, seedV2StoreFromV1 } from "./engine-v2-migration.js";
+import { importMissingV1Chats, readMigratedSessions, seedV2StoreFromV1 } from "./engine-v2-migration.js";
 import { pluginDirectories } from "./managed-opencode-v2.js";
 import sessionPlugin from "./opencode-plugins/omnirush-session-next.js";
 import { startsV1Chat } from "./server.js";
@@ -253,3 +253,73 @@ test("the 2.x engine's agent prompt: its own tool names, no todo list; nothing e
   expect(instructions).toContain("smaller patch (or edit) calls");
   for (const word of ["apply_patch", "bash tool", "task tool", "todo list"]) expect(instructions.includes(word)).toBe(false);
 });
+
+test("1.x chats made after the 2.x store was seeded come over once; chats the 2.x store has or had stay as they are", () => withDir(async (dir) => {
+  const v1 = join(dir, "v1", "opencode.db");
+  await Bun.write(join(dir, "v1", ".keep"), "");
+  const old = new Database(v1, { create: true });
+  old.run("CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL)");
+  old.run("CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, directory TEXT NOT NULL, title TEXT NOT NULL, extra_v1 TEXT)");
+  old.run("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)");
+  old.run("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)");
+  // ses_a came over at the seed and goes on in 2.x; ses_d came over and was deleted there; ses_c was made in 1.x later.
+  for (const id of ["ses_a", "ses_c", "ses_d"]) {
+    old.run(`INSERT INTO session VALUES ('${id}', 'p1', '/w', '${id} in 1.x', 'x')`);
+    old.run(`INSERT INTO message VALUES ('msg_${id}', '${id}', 1, 1, '{}')`);
+    old.run(`INSERT INTO part VALUES ('prt_${id}', 'msg_${id}', '${id}', 1, 1, '{}')`);
+  }
+  old.close();
+  const root = join(dir, "v2", "state");
+  const seeded = await seedV2StoreFromV1(root, v1, new Date("2026-10-25T00:00:00Z"));
+  expect(seeded?.sessions.sort()).toEqual(["ses_a", "ses_c", "ses_d"]);
+  // As 3.7.6 left it: the seed list without ses_c (made in 3.7.5 afterwards), the engine's migration done.
+  await Bun.write(join(root, "v1-migrated-sessions.json"), JSON.stringify({ from: "1.18.32", at: "2026-10-25", backup: seeded!.backup, sessions: ["ses_a", "ses_d"] }));
+  const store = new Database(join(root, "opencode.db"));
+  store.run("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, title TEXT)");
+  store.run("CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL)");
+  store.run("INSERT INTO session_v2 VALUES ('ses_a', 'continued in 2.x'), ('ses_b', 'made in 2.x')");
+  store.run("INSERT INTO kv VALUES ('migration.v1-v2', '{\"phase\":\"completed\"}', 1, 1)");
+  store.run("DELETE FROM session WHERE id = 'ses_c'");
+  store.close();
+
+  const imported = await importMissingV1Chats(root, v1, new Date("2026-10-26T00:00:00Z"));
+  expect(imported?.sessions).toEqual(["ses_c"]);
+  expect(existsSync(imported!.backup)).toBe(true);
+  const after = new Database(join(root, "opencode.db"), { readonly: true });
+  expect(after.query("SELECT id, title FROM session").all()).toEqual([{ id: "ses_c", title: "ses_c in 1.x" }]);
+  expect(after.query("SELECT session_id FROM message").all()).toEqual([{ session_id: "ses_c" }]);
+  expect(after.query("SELECT session_id FROM part").all()).toEqual([{ session_id: "ses_c" }]);
+  expect(after.query("SELECT id, title FROM session_v2 ORDER BY id").all()).toEqual([{ id: "ses_a", title: "continued in 2.x" }, { id: "ses_b", title: "made in 2.x" }]);
+  expect(after.query("SELECT value FROM kv WHERE key = 'migration.v1-v2'").get()).toEqual({ value: "{\"phase\":\"sessions\"}" });
+  after.close();
+  expect(readMigratedSessions(root)).toEqual(new Set(["ses_a", "ses_d", "ses_c"]));
+  // Once over, never again; nothing to do without a 1.x store.
+  expect(await importMissingV1Chats(root, v1)).toBeNull();
+  expect(await importMissingV1Chats(root, join(dir, "missing.db"))).toBeNull();
+}));
+
+test("a 2.x store made without a 1.x store gets the 1.x tables for chats a 1.x app made later", () => withDir(async (dir) => {
+  const v1 = join(dir, "v1", "opencode.db");
+  await Bun.write(join(dir, "v1", ".keep"), "");
+  const old = new Database(v1, { create: true });
+  old.run("CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT NOT NULL)");
+  old.run("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, data TEXT NOT NULL)");
+  old.run("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, data TEXT NOT NULL)");
+  old.run("INSERT INTO session VALUES ('ses_new', '/w'), ('ses_twice', '/w')");
+  old.run("INSERT INTO message VALUES ('msg_1', 'ses_new', '{}')");
+  old.close();
+  const root = join(dir, "v2", "state");
+  await Bun.write(join(root, ".keep"), "");
+  const store = new Database(join(root, "opencode.db"), { create: true });
+  store.run("CREATE TABLE session_v2 (id TEXT PRIMARY KEY)");
+  store.run("CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL)");
+  // A chat 3.7.5 copied from the 2.x store into 1.x keeps its id: it is already here.
+  store.run("INSERT INTO session_v2 VALUES ('ses_twice')");
+  store.close();
+  expect((await importMissingV1Chats(root, v1))?.sessions).toEqual(["ses_new"]);
+  const after = new Database(join(root, "opencode.db"), { readonly: true });
+  expect(after.query("SELECT id FROM session").all()).toEqual([{ id: "ses_new" }]);
+  expect(after.query("SELECT id FROM message").all()).toEqual([{ id: "msg_1" }]);
+  expect(after.query("SELECT value FROM kv").get()).toEqual({ value: "{\"phase\":\"sessions\"}" });
+  after.close();
+}));
