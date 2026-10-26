@@ -4,7 +4,7 @@ import type { EnginePermissionRule } from "./managed-policy-rules.js";
 // deliberately has no reload/dispose call, unlike managed-opencode.ts and server.ts reloadOpencodeEngine.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -89,6 +89,18 @@ function diagnostics(exitCode: number | null, stdout: string, stderr: string): E
 }
 
 /**
+ * Writes `text` to `file` only when the file does not already hold it. The 2.x engine watches its config: a rewrite
+ * with the same content still reloads it, and a reload during a turn drops the model streams in flight (the gateway
+ * then settles them as disconnects). Returns whether it wrote.
+ */
+export async function writeIfChanged(file: string, text: string, write: (file: string, text: string) => Promise<void>): Promise<boolean> {
+  const current = await readFile(file, "utf8").catch(() => null);
+  if (current === text) return false;
+  await write(file, text);
+  return true;
+}
+
+/**
  * The 2.x engine loads a configured plugin only from a directory (a file path is skipped with a
  * warning): each plugin module gets one, whose server.js re-exports it.
  */
@@ -96,7 +108,7 @@ export async function pluginDirectories(root: string, modules: string[]): Promis
   return Promise.all(modules.map(async (module) => {
     const directory = join(root, basename(module, extname(module)));
     await mkdir(directory, { recursive: true, mode: 0o700 });
-    await writeFile(join(directory, "server.js"), `export { default } from ${JSON.stringify(pathToFileURL(module).href)};\n`, { mode: 0o600 });
+    await writeIfChanged(join(directory, "server.js"), `export { default } from ${JSON.stringify(pathToFileURL(module).href)};\n`, (file, text) => writeFile(file, text, { mode: 0o600 }));
     return directory;
   }));
 }
@@ -292,7 +304,7 @@ export async function createManagedOpencodeV2Server(
     const target = join(configDir, "opencode.json");
     // The box shell runs each command in its project's box (boxsh; natively for a project without one).
     const box = await options.box?.().catch(() => null) ?? null;
-    await writeFileAtomic(target, `${JSON.stringify({
+    await writeIfChanged(target, `${JSON.stringify({
       $schema: "https://opencode.ai/config.json",
       // No session sharing to an outside service; the bundled engine never replaces itself.
       share: "disabled",
@@ -311,7 +323,7 @@ export async function createManagedOpencodeV2Server(
       ...(options.webSearch?.() ? { websearch: { provider: "exa" } } : {}),
       ...(box ? { shell: box.shell } : {}),
       plugins: await pluginDirectories(join(options.rootDir, "plugins"), [sessionNextPluginPath(), ...(options.env?.OMNIRUSH_SERVER_URL ? [managedPolicyPluginPath(true)] : []), ...(box ? [box.plugin] : [])]),
-    }, null, 2)}\n`, { mode: 0o600 });
+    }, null, 2)}\n`, (file, text) => writeFileAtomic(file, text, { mode: 0o600 }));
   }
 
   async function close(): Promise<void> {
