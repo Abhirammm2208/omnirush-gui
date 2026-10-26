@@ -95,10 +95,12 @@ function catalogModel(
  * metadata. Only a fallback: the synced catalog replaces it whole.
  */
 export function builtinOmniRushModelCatalog(): OmniRushModelCatalog {
+  // One provider (the server's switch_group "openai", its Codex route): a chat switches between them before the
+  // first catalog sync too, as it does after (a fresh install used to offer a new chat instead).
   return [
-    catalogModel("gpt-6-astra", "GPT 6 Astra", PROVIDER_FAMILY, true),
-    catalogModel("gpt-6.1-sol", "GPT 6.1 Sol", PROVIDER_FAMILY, false),
-    catalogModel("gpt-6-sol", "GPT 6 Sol", PROVIDER_FAMILY, false),
+    { ...catalogModel("gpt-6-astra", "GPT 6 Astra", PROVIDER_FAMILY, true), switch_group: "openai" },
+    { ...catalogModel("gpt-6.1-sol", "GPT 6.1 Sol", PROVIDER_FAMILY, false), switch_group: "openai" },
+    { ...catalogModel("gpt-6-sol", "GPT 6 Sol", PROVIDER_FAMILY, false), switch_group: "openai" },
   ];
 }
 

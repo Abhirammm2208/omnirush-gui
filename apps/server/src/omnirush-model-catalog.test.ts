@@ -110,7 +110,7 @@ describe("omnirush model catalog sanitizer", () => {
     const allowed = new Set([
       "id", "display_name", "family", "status", "default", "reasoning_levels", "limits", "limits.context", "limits.output",
       "capabilities", "capabilities.reasoning", "capabilities.tool_call", "capabilities.web_search",
-      "capabilities.image_input", "capabilities.file_input",
+      "capabilities.image_input", "capabilities.file_input", "switch_group",
     ]);
     const paths = keyPaths(catalog).map((path) => path.replace(/^\d+\./, "")).filter((path) => !/^\d+$/.test(path));
     expect(paths.filter((path) => !allowed.has(path) && !/^reasoning_levels\.\d+$/.test(path))).toEqual([]);
@@ -164,7 +164,12 @@ describe("omnirush model catalog sanitizer", () => {
         { id: "gpt-6-sol", display_name: "GPT 6 Sol", default: false, reasoning_levels: ["low", "high", "xhigh", "max"] },
       ],
     });
-    expect(catalog).toEqual(builtinOmniRushModelCatalog());
+    // The shared metadata; an older backend names no switch group (only the built-ins carry the Codex route's).
+    expect(catalog).toEqual(builtinOmniRushModelCatalog().map(({ switch_group: _group, ...model }) => model));
+  });
+
+  test("before the first sync, a chat on Astra may switch to either Sol: the built-ins are one provider", () => {
+    expect(builtinOmniRushModelCatalog().map((model) => model.switch_group)).toEqual(["openai", "openai", "openai"]);
   });
 
   test("the built-ins are only the fallback (the backend's list); the catalog decides what is served", () => {

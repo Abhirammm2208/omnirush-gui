@@ -28,7 +28,8 @@
         "web_search": true,
         "image_input": true,
         "file_input": true
-      }
+      },
+      "switch_group": "openai"
     },
     {
       "id": "gpt-6.1-sol",
@@ -57,7 +58,8 @@
         "web_search": true,
         "image_input": true,
         "file_input": true
-      }
+      },
+      "switch_group": "openai"
     },
     {
       "id": "gpt-6-sol",
@@ -86,7 +88,8 @@
         "web_search": true,
         "image_input": true,
         "file_input": true
-      }
+      },
+      "switch_group": "openai"
     },
     {
       "id": "meta-muse-spark",
