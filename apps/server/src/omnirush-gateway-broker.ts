@@ -1050,6 +1050,53 @@ function apiUrl(gatewayUrl: string, path: string): string {
   return url.toString();
 }
 
+/** How long a finished model stream is still read after the engine stops reading it. */
+const SETTLE_DRAIN_MS = 60_000;
+const FINAL_EVENT = /"type":\s*"response\.completed"|event:\s*response\.completed|data:\s*\[DONE\]/;
+
+/** Whether a model stream reached its final event; set by settleOnFinish, read when the engine goes away. */
+type StreamTail = { completed: boolean; abort: () => void };
+
+/**
+ * A model stream as the engine reads it. The 2.x engine stops reading once it has the answer (after
+ * `response.completed`): the stream is then read to its end in the background (at most SETTLE_DRAIN_MS), so the
+ * gateway settles the request as served instead of as a disconnect. Stopped before the final event (the person's
+ * Stop), the upstream request is cancelled as before.
+ */
+export function settleOnFinish(stream: ReadableStream<Uint8Array>, tail: StreamTail, drainMs = SETTLE_DRAIN_MS): ReadableStream<Uint8Array> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let carry = "";
+  return new ReadableStream<Uint8Array>({
+    pull: async (controller) => {
+      try {
+        const { done, value } = await reader.read();
+        if (done) { controller.close(); return; }
+        if (!tail.completed) {
+          const text = carry + decoder.decode(value, { stream: true });
+          if (FINAL_EVENT.test(text)) tail.completed = true;
+          carry = text.slice(-64);
+        }
+        controller.enqueue(value);
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    cancel: (reason) => {
+      if (!tail.completed) {
+        tail.abort();
+        return reader.cancel(reason).catch(() => undefined);
+      }
+      const timer = setTimeout(() => { tail.abort(); void reader.cancel().catch(() => undefined); }, drainMs);
+      (timer as { unref?: () => void }).unref?.();
+      void (async () => {
+        try { for (;;) { if ((await reader.read()).done) break; } } catch { /* gone */ } finally { clearTimeout(timer); }
+      })();
+      return undefined;
+    },
+  });
+}
+
 function untilAborted(response: Promise<Response>, signal: AbortSignal): Promise<Response> {
   if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise((resolvePromise, reject) => {
@@ -1392,6 +1439,8 @@ export class OmniRushGatewayBroker {
    * every later request, so one bad file cannot fail the rest of a session.
    */
   private readonly rejectedAttachments = new RejectedAttachments();
+  /** Each upstream model answer's tail (settleOnFinish): whether it finished, and how to cancel it. */
+  private readonly streamTails = new WeakMap<Response, StreamTail>();
   private capabilityCache: { gatewayUrl: string; accountKey: string; capabilities: TraceCapabilities; expiresAt: number } | null = null;
   private capabilityProbe: { key: string; promise: Promise<TraceCapabilities | null> } | null = null;
   private capabilityFailure: { gatewayUrl: string; accountKey: string; until: number } | null = null;
@@ -1597,6 +1646,8 @@ export class OmniRushGatewayBroker {
       if (refusal instanceof Response) return refusal;
       upstreamBody = refusal;
     }
+    const tail = this.streamTails.get(response);
+    if (streamed && upstreamBody && tail) upstreamBody = settleOnFinish(upstreamBody, tail);
     const responseBody = streamed && upstreamBody
       ? guardEventStream(upstreamBody, {
           requestId,
@@ -2237,11 +2288,23 @@ export class OmniRushGatewayBroker {
     if (this.boxRequest(request)) headers.set(BOX_HEADER, "1");
     // Strict sessions: every request of a chat says so (the gateway binds it itself if ours failed).
     if (strictHeader && headers.has("x-omnirush-session-id")) headers.set(strictHeader, "1");
+    // The engine going away cancels the request, unless its answer already finished (settleOnFinish reads it to its end).
+    const upstream = new AbortController();
+    const tail: StreamTail = { completed: false, abort: () => upstream.abort() };
+    const onAbort = () => { if (!tail.completed) upstream.abort(request.signal.reason); };
+    if (request.signal.aborted) upstream.abort(request.signal.reason);
+    else request.signal.addEventListener("abort", onAbort, { once: true });
     return this.fetcher(upstreamUrl(this.state.gatewayUrl, path), {
       method: request.method,
       headers,
       ...(body ? { body } : {}),
-      signal: request.signal,
+      signal: upstream.signal,
+    }).then((response) => {
+      this.streamTails.set(response, tail);
+      return response;
+    }, (error: unknown) => {
+      request.signal.removeEventListener("abort", onAbort);
+      throw error;
     });
   }
 
