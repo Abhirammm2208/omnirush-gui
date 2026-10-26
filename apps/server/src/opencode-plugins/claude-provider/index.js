@@ -42,6 +42,8 @@ export const CLAUDE_CODE_BUILDS = {
   arm64: { url: `https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64/-/claude-code-linux-arm64-${CLAUDE_CODE_VERSION}.tgz`, integrity: "sha512-AePKWuymgDSCh7nScJ4dx/pF1Kppzk4IwQuh6JCROiqQdBVGaaHw6jVf/fY5PhbSjy9EQML6yOiUfc50aFpnTA==" },
 };
 export const PROVIDER_ID = "omnirush-claude";
+/** A Claude turn where the sandbox isn't running (off, or it cannot run on this machine). */
+export const NO_BOX = "Claude runs only in the OmniRush sandbox, and the sandbox isn't running for this project, so Claude can't start here.";
 const BOX_RUN = "/run/omnirush";
 const BOX_BIN = `/opt/omnirush/claude/${CLAUDE_CODE_VERSION}/claude`;
 const STOP_GRACE_MS = 5_000;
@@ -195,7 +197,8 @@ class ClaudeCodeModel {
     const root = path.resolve(headers["x-omnirush-directory"] || directory || process.cwd());
     const key = boxKey(root);
     const record = boxHome ? readRecord(boxHome, key) : null;
-    if (!shell || !record || record.state === "off") throw apiError("Claude runs only in the OmniRush sandbox. Turn it on for this folder (omnirush sandbox on) and start the chat again.");
+    // `noBox`: the app's own words for where to look (the CLI names its command; the desktop has none).
+    if (!shell || !record || record.state === "off") throw apiError(this.settings.noBox || NO_BOX);
     const run = path.join(boxHome, "projects", key, "claude");
     const configDir = path.join(run, "config");
     fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
