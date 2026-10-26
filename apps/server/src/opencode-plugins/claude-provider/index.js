@@ -6,7 +6,7 @@
 //
 // Settings (the provider's config options, nothing else is read from the app):
 //   grantURL   the app's local route, POST JSON with header x-omnirush-usage-key: grantKey
-//                {op:"grant", sessionID, model, resume, earlier, prompt, refresh?}
+//                {op:"grant", sessionID, model, resume, earlier, directory, prompt, refresh?}
 //                  -> {ok:true, token, baseUrl, client} | {ok:false, message}
 //                  (resume: Claude has a transcript of this chat; earlier: the engine
 //                  history has replies; asked again every 60 s while a turn runs, refresh: true)
@@ -14,7 +14,8 @@
 //   grantKey   that header's value
 //   shell      boxsh (the engine's box shell); boxHome the box home (boxes/<key>.json,
 //              projects/<key> = the box's /run/omnirush)
-//   directory  the project folder (default: the engine's cwd)
+//   directory  the project folder (default: the engine's cwd); a request header
+//              x-omnirush-directory names it instead (one desktop engine, many projects)
 //   client     "cli/2.7.3" | "gui/3.8.0": X-OmniRush-Client to the relay
 //   note       optional text shown once at a chat's start
 // The relay token lives in the box's run folder, read by Claude Code's
@@ -190,7 +191,8 @@ class ClaudeCodeModel {
     if (headers["x-omnirush-side"] === "1") throw apiError("Side questions aren't available in Claude chats yet.");
     const compaction = headers["x-omnirush-agent"] === "compaction";
     const { shell, boxHome, directory, client = "cli", note } = this.settings;
-    const root = path.resolve(directory || process.cwd());
+    // One desktop engine serves every project: the request names its folder.
+    const root = path.resolve(headers["x-omnirush-directory"] || directory || process.cwd());
     const key = boxKey(root);
     const record = boxHome ? readRecord(boxHome, key) : null;
     if (!shell || !record || record.state === "off") throw apiError("Claude runs only in the OmniRush sandbox. Turn it on for this folder (omnirush sandbox on) and start the chat again.");
@@ -202,7 +204,7 @@ class ClaudeCodeModel {
     const content = compaction ? [{ type: "text", text: "/compact" }] : lastUserContent(options.prompt);
     if (!content.length) throw apiError("Nothing to send to Claude.");
     const earlier = (options.prompt ?? []).some((m) => m?.role === "assistant");
-    const ask = { op: "grant", sessionID, model: this.modelId, resume, earlier, prompt: lineText(content).slice(0, 4000) };
+    const ask = { op: "grant", sessionID, model: this.modelId, resume, earlier, directory: root, prompt: lineText(content).slice(0, 4000) };
     let grant = await this.grant(ask);
     const tokenFile = path.join(run, "token");
     const writeToken = (token) => { fs.writeFileSync(`${tokenFile}.tmp`, token, { mode: 0o600 }); fs.renameSync(`${tokenFile}.tmp`, tokenFile); };
@@ -230,7 +232,7 @@ class ClaudeCodeModel {
         start(controller) {
           const send = (part) => { if (!done) controller.enqueue(part); };
           send({ type: "stream-start", warnings: [] });
-          if (note && !resume && !earlier && !compaction) for (const part of mapper.note(note)) send(part);
+          if (note && !resume && !earlier && !compaction) for (const part of mapper.note(`${note}\n\n`)) send(part);
           child.stderr.on("data", (d) => { stderr = (stderr + d).slice(-4000); });
           let buffer = "";
           child.stdout.on("data", (chunk) => {
