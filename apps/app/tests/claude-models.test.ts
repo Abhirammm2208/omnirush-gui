@@ -12,6 +12,7 @@ import {
 } from "../src/react-app/domains/session/surface/claude-models";
 import { switchableModel } from "../src/react-app/domains/session/surface/model-modes";
 import { switchableModels as sharedSwitchable } from "../../server/src/model-modes/strict-sessions.mjs";
+import { builtinOmniRushModelCatalog } from "../../server/src/omnirush-model-catalog";
 
 const opus = { providerID: "omnirush", modelID: "claude-opus-5-5" };
 const sonnet = { providerID: "omnirush", modelID: "claude-sonnet-5-5" };
@@ -81,6 +82,13 @@ describe("popup decision", () => {
     }
     // No group known (an older server): a new chat.
     expect(decideModelPick({ next: sol, current: astra, started: true, claude: allowed, switchable: (c, n) => switchableModel(undefined, c, n) })).toEqual({ kind: "new_chat" });
+  });
+
+  test("a fresh install (only the built-in model list, before the first sync) switches Astra to Sol without the popup", () => {
+    // As GET /omnirush/subagent-model serves the built-ins (apps/server/src/server.ts).
+    const models = builtinOmniRushModelCatalog().map((model) => ({ id: model.id, name: model.display_name, family: model.family, default: model.default, efforts: model.reasoning_levels, ...(model.switch_group ? { switch_group: model.switch_group } : {}) }));
+    const switchable = (current: typeof astra, next: typeof astra) => switchableModel(models, current, next);
+    expect(decideModelPick({ next: sol, current: astra, started: true, claude: allowed, switchable })).toEqual({ kind: "switch" });
   });
 
   test("an account without Claude is told plainly, wherever it picks, with no switch", () => {
