@@ -306,6 +306,17 @@
   ],
   "desktop": [
     {
+      "version": "3.7.9",
+      "date": "2026-10-26",
+      "new": [],
+      "improved": [],
+      "fixed": [
+        "Chats no longer go missing from the sidebar: they show right away when the app starts, also when their folder has since become a git repository or its path is written differently.",
+        "Chats you made after going back to an older version of the app now come over too, each once, next to the chats you already had.",
+        "A message the model service turns down is no longer sent again on its own; only timeouts, busy moments and server errors are retried."
+      ]
+    },
+    {
       "version": "3.7.6",
       "date": "2026-10-25",
       "new": [
