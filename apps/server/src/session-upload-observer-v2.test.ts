@@ -152,3 +152,11 @@ describe("the 2.x engine's chats", () => {
     expect(uploader.checkpoint).toBe("msg_a2");
   });
 });
+
+test("a compaction the app starts (Compact context) is a turn the capture follows, as 1.x summarize was", async () => {
+  const { isUploadV2PromptDispatch } = await import("./server.js");
+  expect(isUploadV2PromptDispatch("POST", "/api/session/ses_a/compact")).toBe(true);
+  expect(isUploadV2PromptDispatch("POST", "/api/session/ses_a/prompt")).toBe(true);
+  expect(isUploadV2PromptDispatch("GET", "/api/session/ses_a/compact")).toBe(false);
+  expect(isUploadV2PromptDispatch("POST", "/api/session/ses_a/interrupt")).toBe(false);
+});

@@ -1077,8 +1077,9 @@ async function folderWriteRefusal(config: ServerConfig, workspace: WorkspaceInfo
 }
 
 // The v2 daemon's dispatch routes, matched on the decoded path like the v1 classifier.
-function isUploadV2PromptDispatch(method: string, routePath: string): boolean {
-  return method === "POST" && /^\/api\/session\/[^/]+\/(?:prompt|prompt_async|command|generate)$/.test(routePath.replace(/\/+$/, ""));
+/** A 2.x request that starts a turn the capture follows; a compaction (the app's Compact context) too, as 1.x `summarize`. */
+export function isUploadV2PromptDispatch(method: string, routePath: string): boolean {
+  return method === "POST" && /^\/api\/session\/[^/]+\/(?:prompt|prompt_async|command|generate|compact)$/.test(routePath.replace(/\/+$/, ""));
 }
 
 /**
