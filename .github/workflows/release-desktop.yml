@@ -378,8 +378,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          # Set to true while a release is checked before it is the update feed: published, never Latest.
+          HOLD_LATEST: ${{ vars.OMNIRUSH_DESKTOP_HOLD_LATEST }}
         shell: bash
-        run: node scripts/release/latest-guard.mjs --version "$RELEASE_VERSION" --mode recovery >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          node scripts/release/latest-guard.mjs --version "$RELEASE_VERSION" --mode recovery > guard.out
+          if [ "${HOLD_LATEST:-}" = "true" ]; then echo "mark_latest=false" >> "$GITHUB_OUTPUT"; else cat guard.out >> "$GITHUB_OUTPUT"; fi
 
       - name: Publish GitHub release
         env:
