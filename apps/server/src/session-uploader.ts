@@ -44,6 +44,7 @@ import { maskWindowsProfiles } from "./context/privacy.js";
 import bundledBestPractices from "./bundled-best-practices.json" with { type: "json" };
 import serverPackage from "../package.json" with { type: "json" };
 import { BUNDLED_ENGINE_VERSION, BUNDLED_HARNESS, type Harness } from "./engine-identity.js";
+import { CLAUDE_CODE_VERSION, CLAUDE_PROVIDER_ID } from "./claude-code/chat.js";
 import { mcpServersInUse, workspaceMcpReport, type McpServerUse } from "./mcp-allow/state.js";
 import type { ComputerUseEnvironment } from "./computer-use/desktop.js";
 import { gatewayUrlAllowed } from "./release-guard.js";
@@ -5278,7 +5279,8 @@ export class SessionUploader {
     // Only a chat that used computer use gets the field.
     const computerUse = this.computerUse.get(sessionId) ?? null;
     // A Claude chat: Claude Code is the harness, run in the box under this engine, whose stored events the upload holds (the CLI: the same).
-    const claude = this.claudeChats.get(sessionId);
+    // Also a reopened chat before its next prompt: the model its stored messages name.
+    const claude = this.claudeChats.get(sessionId) ?? (this.sessions.get(sessionId)?.model?.provider_id === CLAUDE_PROVIDER_ID ? CLAUDE_CODE_VERSION : undefined);
     const harness = claude ? { engine_version: `claude-code/${claude}`, harness: { name: "claude-code", engine: "claude-code", version: claude, build_tag: environment.harness.build_tag, host_engine: environment.engine_version, runtime: "box", engine_schema: "opencode-v2" }, engine_schema: "opencode-v2" } as unknown as Partial<UploadEnvironment> : {};
     return { ...environment, ...harness, ...boxEnvironment(environment, box?.label ?? null), ...(toolchain ? { toolchain } : {}), ...(box ? { sandbox: box.label } : {}), ...(importedFrom ? { imported_from: importedFrom } : {}), ...(mcpServers ? { mcp_servers: mcpServers } : {}), ...(computerUse ? { computer_use: computerUse } : {}) };
   }

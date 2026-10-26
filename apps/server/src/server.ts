@@ -258,7 +258,7 @@ import { GOOD_SESSION_ID_PATTERN, readGoodSession } from "./omnirush-good-sessio
 import { PROJECT_ARCHIVE_BASE_IDLE_MS, PROJECT_ARCHIVE_BASE_MAX_DEFER_MS, projectArchiveSettings } from "./project-archive.js";
 import type { ArchiveApiRequestInit } from "./session-archive/upload.js";
 import { runtimeStorageDir } from "./runtime-db.js";
-import { CLAUDE_AUTO_NOTE, CLAUDE_CODE_VERSION, claudeChatRoute, type ClaudeChatInput } from "./claude-code/chat.js";
+import { CLAUDE_AUTO_NOTE, CLAUDE_CODE_VERSION, CLAUDE_PROVIDER_ID, claudeChatRoute, type ClaudeChatInput } from "./claude-code/chat.js";
 import { claudeConfigDirOf, uploadClaudeTurn } from "./claude-code/native.js";
 import { prepareDesktopInstallLog } from "./install-log-host.js";
 import pkg from "../package.json" with { type: "json" };
@@ -1209,6 +1209,22 @@ export async function engineHasSession(baseUrl: string, auth: string | null, dir
     return response.status !== 404;
   } catch {
     return true;
+  }
+}
+
+/** The provider a 2.x chat runs on (its engine session's model), or null when unreadable. */
+export async function engineChatProvider(engine: EngineTarget, sessionId: string): Promise<string | null> {
+  try {
+    const response = await loopbackFetch(buildOpencodeProxyUrl(engine.baseUrl, `/api/session/${encodeURIComponent(sessionId)}`, engine.search), { headers: new Headers(engine.headers), signal: AbortSignal.timeout(ENGINE_SESSION_CHECK_TIMEOUT_MS) });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return null;
+    }
+    const body: unknown = await response.json();
+    const model = isRecord(body) && isRecord(body.data) && isRecord(body.data.model) ? body.data.model : null;
+    return typeof model?.providerID === "string" ? model.providerID : null;
+  } catch {
+    return null;
   }
 }
 
@@ -2407,6 +2423,8 @@ export async function proxyOpencodeV2Request(input: {
   if (capture && uploadedSessionId && engine && !steer) {
     capture.boxSession(uploadedSessionId, boxInfo);
     capture.permissionMode(await capturePermissionMode(input.config));
+    // A Claude chat's uploads name Claude Code from its first one, also after a restart (its grant comes later). CLI: beforePromptDispatch.
+    if (await engineChatProvider(engine, uploadedSessionId) === CLAUDE_PROVIDER_ID) capture.markClaude(uploadedSessionId, CLAUDE_CODE_VERSION);
     capture.startSession(uploadedSessionId, input.workspace.id, input.workspace.path, turnsBefore);
     // The turn before's background processes finish writing (at most 10 s after it ended), its project
     // delta is taken (at most 5 s more, only when it ended a moment ago), then capture v2's session-start
