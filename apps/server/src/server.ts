@@ -1079,6 +1079,34 @@ async function folderWriteRefusal(config: ServerConfig, workspace: WorkspaceInfo
 }
 
 // The v2 daemon's dispatch routes, matched on the decoded path like the v1 classifier.
+/** Migrated chats whose agent was checked this run (engine-v2-migration.ts): one look per chat. */
+const migratedAgentsChecked = new Set<string>();
+
+/**
+ * A chat that came from 1.x keeps its 1.x agent (the 1.x desktop's "omnirush"), which the 2.x engine does not have:
+ * every new turn then fails before it reaches a model ("Agent not found"). Before such a chat's turn, an agent the
+ * engine does not list is switched to the engine's own "build" (what a 2.x chat runs on).
+ */
+export async function ensureMigratedChatAgent(engine: (path: string, init?: RequestInit) => Promise<Response>, sessionId: string, checked = migratedAgentsChecked): Promise<string | null> {
+  if (checked.has(sessionId)) return null;
+  const read = async (path: string): Promise<unknown> => {
+    const response = await engine(path);
+    if (!response.ok) { await response.body?.cancel().catch(() => undefined); return null; }
+    const payload = (await response.json().catch(() => null)) as unknown;
+    return isRecord(payload) && "data" in payload ? payload.data : payload;
+  };
+  const session = await read(`/api/session/${encodeURIComponent(sessionId)}`);
+  const agents = await read("/api/agent");
+  if (!isRecord(session) || !Array.isArray(agents)) return null;
+  checked.add(sessionId);
+  const agent = typeof session.agent === "string" ? session.agent : null;
+  const known = agents.some((entry) => isRecord(entry) && (entry.id === agent || entry.name === agent));
+  if (!agent || known) return null;
+  const switched = await engine(`/api/session/${encodeURIComponent(sessionId)}/agent`, { method: "POST", body: JSON.stringify({ agent: "build" }), headers: { "content-type": "application/json" } });
+  await switched.body?.cancel().catch(() => undefined);
+  return switched.ok ? agent : null;
+}
+
 /** A 2.x request that starts a turn the capture follows; a compaction (the app's Compact context) too, as 1.x `summarize`. */
 export function isUploadV2PromptDispatch(method: string, routePath: string): boolean {
   return method === "POST" && /^\/api\/session\/[^/]+\/(?:prompt|prompt_async|command|generate|compact)$/.test(routePath.replace(/\/+$/, ""));
@@ -2351,6 +2379,15 @@ export async function proxyOpencodeV2Request(input: {
     await noteTaskPrompt(input.workspace, sessionId, (id, type, data) => recordOpenSessionTrace(input.config, id, type, data));
   }
   if (promptDispatch && input.request.signal.aborted) return stoppedSendResponse(input.config, sessionId);
+  if (promptDispatch && sessionId && input.migratedFromV1?.(sessionId)) {
+    const engineAt = (path: string, init: RequestInit = {}) => {
+      const url = new URL(target.toString());
+      url.pathname = path;
+      return loopbackFetch(url.toString(), { ...init, headers: (() => { const h = new Headers(headers); h.delete("content-length"); for (const [k, v] of Object.entries((init.headers ?? {}) as Record<string, string>)) h.set(k, v); return h; })(), signal: AbortSignal.timeout(10_000) });
+    };
+    const from = await ensureMigratedChatAgent(engineAt, sessionId).catch(() => null);
+    if (from) recordOpenSessionTrace(input.config, sessionId, "engine.agent_mapped", { from, to: "build" });
+  }
   const response = await loopbackFetch(target.toString(), { method, headers, body, signal: input.recoverySignal });
   // The engine has the prompt: its session status says busy from now on.
   turnActivity?.promptDispatched();
