@@ -7,15 +7,12 @@ import {
   ArchiveRestore,
   ArrowLeft,
   ArrowRight,
-  Blocks,
-  Clock3,
   ChevronRight,
   Columns2,
   Copy,
   FolderPlus,
   Gift,
   Layers,
-  LayoutGrid,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -35,10 +32,10 @@ import {
   UserRound,
   X,
   Workflow,
-  MessageCircleMore,
   Sparkles,
   CircleHelp,
 } from "lucide-react";
+import { CalendarClock, LayoutDashboard, Megaphone, MessageSquareText, Puzzle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { LazyMotion, Reorder, domMax, m, useDragControls } from "motion/react";
 
@@ -115,6 +112,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Dialog,
   DialogClose,
@@ -133,7 +131,7 @@ import {
 } from "@/components/ui/select";
 
 import { SidebarContext, useSidebarContext } from "./app-sidebar-provider";
-import { AccountStatusMenu, type AccountStatusMenuProps } from "./account-status-menu";
+import { AccountStatusMenu, accountInitials, type AccountStatusMenuProps } from "./account-status-menu";
 import { usePlatform } from "../../../kernel/platform";
 import {
   sessionNumberAriaKeyShortcut,
@@ -997,20 +995,31 @@ function OmniRushWordmark({ className }: { className?: string }) {
   );
 }
 
-/** An icon button for the sidebar's compact rows: the label is the tooltip, a badge sits on the corner. */
-function SidebarIconButton({ icon: Icon, label, active, badge, className, ...props }: Omit<React.ComponentProps<"button">, "children"> & {
+/** The app tooltip around a sidebar control (a native title is too slow and easy to miss). */
+export function SidebarTip({ tip, side = "bottom", children }: { tip: React.ReactNode; side?: "top" | "bottom"; children: React.ReactElement }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger render={children} />
+      <TooltipContent side={side}>{tip}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** An icon button for the sidebar's compact rows: the label (or a longer `title`) is the tooltip, a badge sits on the corner. */
+export function SidebarIconButton({ icon: Icon, label, title, tooltipSide, active, badge, className, ...props }: Omit<React.ComponentProps<"button">, "children"> & {
   icon: LucideIcon;
   label: string;
+  tooltipSide?: "top" | "bottom";
   active?: boolean;
   badge?: React.ReactNode;
 }) {
   return (
+    <SidebarTip tip={title ?? label} side={tooltipSide}>
     <Button
       type="button"
       variant="ghost"
       size="icon-sm"
       aria-label={label}
-      title={label}
       aria-current={active ? "page" : undefined}
       data-active={active ? "" : undefined}
       className={cn(
@@ -1022,6 +1031,7 @@ function SidebarIconButton({ icon: Icon, label, active, badge, className, ...pro
       <Icon className="size-4" />
       {badge}
     </Button>
+    </SidebarTip>
   );
 }
 
@@ -1059,6 +1069,7 @@ function QualitySpinButtons({ quality }: { quality: AccountQuality }) {
         icon={Gift}
         label={ready > 0 ? t("quality.spin_ready", { count: ready }) : t("quality.how_to_earn_spins")}
         title={spinRowTitle(quality)}
+        tooltipSide="top"
         onClick={ready > 0 ? openSpin : openPanel}
         data-testid="quality-spin-button"
         data-spins={ready}
@@ -1067,10 +1078,10 @@ function QualitySpinButtons({ quality }: { quality: AccountQuality }) {
         badge={ready > 0 ? <IconCount value={ready} label={t("quality.ready_count", { count: ready })} /> : null}
       />
       {progress ? (
+        <SidebarTip side="top" tip={goodSessionWording(hint?.text ?? quality.nextTierHint ?? "Quality rewards")}>
         <button
           type="button"
           onClick={openPanel}
-          title={goodSessionWording(hint?.text ?? quality.nextTierHint ?? "Quality rewards")}
           aria-label={t("quality.next_spin", { progress })}
           data-testid="quality-footer-next"
           className="flex h-7 items-center gap-1 rounded-md px-1 text-[11px] text-muted-foreground tabular-nums transition hover:bg-sidebar-accent hover:text-foreground"
@@ -1078,6 +1089,7 @@ function QualitySpinButtons({ quality }: { quality: AccountQuality }) {
           <ProgressRing progress={hint!.progress} size={12} stroke={1.75} />
           {progress}
         </button>
+        </SidebarTip>
       ) : null}
     </span>
   );
@@ -1089,9 +1101,10 @@ function WhatsNewIconButton() {
   const label = t("whats_new.title");
   return (
     <SidebarIconButton
-      icon={Sparkles}
+      icon={Megaphone}
       label={unseen ? `${label} (${t("whats_new.unseen")})` : label}
       title={label}
+      tooltipSide="top"
       onClick={() => openWhatsNew("menu")}
       data-testid="sidebar-whats-new"
       badge={unseen ? <span data-testid="whats-new-dot" aria-hidden="true" className="absolute end-1 top-1 size-1.5 rounded-full bg-primary" /> : null}
@@ -1099,7 +1112,7 @@ function WhatsNewIconButton() {
   );
 }
 
-function NativeAccountFooter({ onOpenAccountSettings }: { onOpenAccountSettings: () => void }) {
+export function NativeAccountFooter({ onOpenAccountSettings }: { onOpenAccountSettings: () => void }) {
   // Shared with the quality popup (QualityRewards): one /device/me read for both.
   const status: NativeAccountStatus | null = useAccountStatusStore((store) => store.status);
   const { config: shellConfig } = useShellConfig();
@@ -1148,8 +1161,14 @@ function NativeAccountFooter({ onOpenAccountSettings }: { onOpenAccountSettings:
             data-testid="native-account-profile"
             data-account-server={serverHost ?? undefined}
           >
-            <span className="relative flex size-6 shrink-0 items-center justify-center rounded-full border border-sidebar-border bg-sidebar-accent">
-              <UserRound className="size-3.5" />
+            <span
+              className={cn(
+                "relative flex size-7 shrink-0 items-center justify-center rounded-full",
+                connected ? "bg-primary/15 text-[10.5px] font-semibold text-link" : "border border-dashed border-sidebar-border text-muted-foreground",
+              )}
+              data-testid="native-account-avatar"
+            >
+              {connected ? accountInitials(status?.displayName ?? null, status?.email?.trim() || accountLabel) : <UserRound className="size-3.5" />}
               <span
                 className={cn(
                   "absolute -bottom-0.5 -right-0.5 size-2 rounded-full border border-sidebar",
@@ -1185,21 +1204,28 @@ function NativeAccountFooter({ onOpenAccountSettings }: { onOpenAccountSettings:
             </SidebarMenuAction>
           ) : null}
         </SidebarMenuItem>
+        {shellConfig.feedbackButton ? (
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              type="button"
+              onClick={() => openFeedbackDialog({ trigger: "menu" })}
+              tooltip={t("session.support_feedback")}
+              aria-label={t("session.support_feedback")}
+              data-testid="sidebar-send-feedback"
+              className="h-8 border border-sidebar-border/70 font-medium"
+            >
+              <MessageSquareText className="size-4" />
+              <span className="flex-1 truncate">{t("session.support_feedback")}</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        ) : null}
       </SidebarMenu>
-      {/* Rewards on the left, feedback, release notes and Settings on the right: one row. */}
+      {/* Rewards on the left, release notes and Settings on the right: one row. */}
       <div role="group" aria-label={t("sidebar.account_tools")} data-testid="sidebar-footer-tools" className="flex items-center gap-0.5 pe-1.5">
         {quality ? <QualitySpinButtons quality={quality} /> : null}
         <span className="flex-1" />
-        {shellConfig.feedbackButton ? (
-          <SidebarIconButton
-            icon={MessageCircleMore}
-            label={t("session.support_feedback")}
-            onClick={() => openFeedbackDialog({ trigger: "menu" })}
-            data-testid="sidebar-send-feedback"
-          />
-        ) : null}
         <WhatsNewIconButton />
-        <SidebarIconButton icon={Settings} label={t("settings.tab_general")} onClick={onOpenAccountSettings} data-testid="sidebar-settings" />
+        <SidebarIconButton icon={Settings} label={t("settings.tab_general")} tooltipSide="top" onClick={onOpenAccountSettings} data-testid="sidebar-settings" />
       </div>
     </SidebarFooter>
   );
@@ -1493,7 +1519,7 @@ export function AppSidebar(props: AppSidebarProps) {
               onClick={() => setLocalWorkflowsOpen(true)}
             />
             {props.onOpenDashboard ? (
-              <SidebarIconButton icon={Blocks} label={t("sidebar.dashboard")} active={props.dashboardActive === true} onClick={props.onOpenDashboard} />
+              <SidebarIconButton icon={LayoutDashboard} label={t("sidebar.dashboard")} active={props.dashboardActive === true} onClick={props.onOpenDashboard} />
             ) : null}
             {props.onOpenTasks ? (
               <SidebarIconButton
@@ -1510,7 +1536,7 @@ export function AppSidebar(props: AppSidebarProps) {
             ) : null}
             {props.onOpenAutomations ? (
               <SidebarIconButton
-                icon={Clock3}
+                icon={CalendarClock}
                 label={t("sidebar.automations")}
                 active={props.automationsActive === true}
                 onClick={props.onOpenAutomations}
@@ -1524,7 +1550,7 @@ export function AppSidebar(props: AppSidebarProps) {
               />
             ) : null}
             <SidebarIconButton
-              icon={LayoutGrid}
+              icon={Puzzle}
               label={t("settings.tab_extensions")}
               active={props.extensionsActive === true}
               onClick={props.onOpenExtensions}

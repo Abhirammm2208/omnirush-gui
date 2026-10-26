@@ -159,7 +159,7 @@ export function resolveCollapsedStatus(
   return null;
 }
 
-function accountInitials(name: string | null, email: string) {
+export function accountInitials(name: string | null, email: string) {
   const source = name?.trim() || email;
   const parts = source.split(/[\s@._-]+/).filter(Boolean);
   if (parts.length === 0) return "?";
