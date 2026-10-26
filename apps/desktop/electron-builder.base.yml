@@ -27,8 +27,10 @@ extraResources:
     filter:
       - "*.js"
       - "*.wasm"
-      # The Claude provider is a folder (the engine loads claude-provider/index.js).
-      - "claude-provider/*.js"
+      # The Claude provider is a folder (the engine loads claude-provider/index.js), its source files as they are.
+      - "claude-provider/index.js"
+      - "claude-provider/map.js"
+      - "claude-provider/PARITY.sha256"
   - from: ../../packages/docs
     to: omnirush-docs
     filter:

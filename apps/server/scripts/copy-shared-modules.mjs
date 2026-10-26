@@ -26,6 +26,14 @@ for (const file of plainModules(src)) {
   copyFileSync(file, target);
   copied.push(relative(src, file));
 }
+// The Claude provider ships as its source files (the CLI ships the same files, see its PARITY.sha256), not bundled.
+for (const name of ["index.js", "map.js", "PARITY.sha256"]) {
+  const file = join(src, "opencode-plugins", "claude-provider", name);
+  const target = join(dist, relative(src, file));
+  mkdirSync(dirname(target), { recursive: true });
+  copyFileSync(file, target);
+  copied.push(relative(src, file));
+}
 const missing = copied.filter((name) => !existsSync(join(dist, name)));
 if (missing.length) {
   process.stderr.write(`copy-shared-modules: not in dist: ${missing.join(", ")}\n`);

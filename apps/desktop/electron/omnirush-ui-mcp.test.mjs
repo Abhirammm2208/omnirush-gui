@@ -154,6 +154,16 @@ describe("bundled UI-control MCP packaging", () => {
     const archive = path.join(resources, "app.asar");
     await asar.createPackage(appSource, archive);
     const verifier = path.join(desktopRoot, "scripts", "verify-packaged-imports.mjs");
+    // The Claude provider beside the archive, as the build ships it; a changed file fails the build too.
+    const providerSource = path.join(desktopRoot, "..", "server", "src", "opencode-plugins", "claude-provider");
+    const provider = path.join(resources, "opencode-plugins", "claude-provider");
+    mkdirSync(provider, { recursive: true });
+    for (const name of ["index.js", "map.js", "PARITY.sha256"]) writeFileSync(path.join(provider, name), readFileSync(path.join(providerSource, name)));
+    writeFileSync(path.join(provider, "map.js"), "export {};\n");
+    const changed = spawnSync(process.execPath, [verifier, archive], { encoding: "utf8" });
+    assert.equal(changed.status, 1, changed.stdout);
+    assert.match(changed.stderr, /claude-provider\/map\.js does not match its PARITY\.sha256 entry/);
+    writeFileSync(path.join(provider, "map.js"), readFileSync(path.join(providerSource, "map.js")));
 
     const missing = spawnSync(process.execPath, [verifier, archive], { encoding: "utf8" });
     assert.equal(missing.status, 1, missing.stdout);

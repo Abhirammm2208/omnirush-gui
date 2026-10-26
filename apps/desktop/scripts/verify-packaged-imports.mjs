@@ -15,7 +15,8 @@
 //
 // Usage: node apps/desktop/scripts/verify-packaged-imports.mjs [app.asar ...]
 // With no arguments it scans apps/desktop/dist-electron/** for app.asar files.
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -100,6 +101,20 @@ if (targets.length === 0) {
   console.error(`[verify-packaged-imports] no app.asar found under ${distElectron}`);
   process.exit(2);
 }
+function claudeProviderProblems(dir) {
+  const parity = join(dir, "PARITY.sha256");
+  if (!existsSync(parity)) return ["opencode-plugins/claude-provider/PARITY.sha256 is missing from the resources"];
+  const rows = readFileSync(parity, "utf8").split("\n").filter((line) => line.trim() && !line.startsWith("#")).map((line) => line.trim().split(/\s+/));
+  const problems = [];
+  for (const name of ["index.js", "map.js"]) {
+    const row = rows.find(([, file]) => file === name);
+    const file = join(dir, name);
+    if (!existsSync(file)) problems.push(`opencode-plugins/claude-provider/${name} is missing from the resources`);
+    else if (!row || createHash("sha256").update(readFileSync(file)).digest("hex") !== row[0]) problems.push(`opencode-plugins/claude-provider/${name} does not match its PARITY.sha256 entry`);
+  }
+  return problems;
+}
+
 let failed = false;
 for (const target of targets) {
   statSync(target);
@@ -111,10 +126,10 @@ for (const target of targets) {
   } else {
     console.log(`[verify-packaged-imports] ${target}: ${modules} modules, all relative imports resolve inside the archive`);
   }
-  // The engine's Claude provider ships beside the archive (opencode-plugins/claude-provider/index.js).
-  if (!existsSync(join(dirname(target), "opencode-plugins", "claude-provider", "index.js"))) {
+  // The engine's Claude provider ships beside the archive (opencode-plugins/claude-provider/): its files as PARITY.sha256 lists them.
+  for (const line of claudeProviderProblems(join(dirname(target), "opencode-plugins", "claude-provider"))) {
     failed = true;
-    console.error(`[verify-packaged-imports] ${target}: opencode-plugins/claude-provider/index.js is missing from the resources`);
+    console.error(`[verify-packaged-imports] ${target}: ${line}`);
   }
   const uiMcpProblems = verifyBundledUiMcp(dirname(target));
   if (uiMcpProblems.length) {
