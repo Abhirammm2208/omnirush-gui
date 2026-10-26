@@ -2246,6 +2246,19 @@ export class OmniRushGatewayBroker {
   }
 
   /**
+   * A chat's switch to `model` on the 2.x engine (POST /api/session/:id/model): refused as its next request would
+   * be (fixedModelRefusal) when the chat is pinned to another provider, so the engine session keeps its own model.
+   * A chat not pinned yet, the same model, or one of its provider: null.
+   */
+  async modelSwitchRefusal(session: string, model: string): Promise<Response | null> {
+    const pin = this.sessionModels.get(session);
+    const asked = model.replace(/^omnirush\//, "");
+    if (!pin || pin === asked || (await this.switchable(pin, asked))) return null;
+    this.log?.("info", "omnirush.ai chat model switch refused (another provider)", { pin, asked });
+    return Response.json({ detail: SESSION_MODEL_FIXED, error: { type: "invalid_request_error", code: SESSION_MODEL_FIXED, message: `This chat runs on ${pin}. Start a new chat to use ${asked}.` } }, { status: 400, headers: { "x-should-retry": "false", [REFUSED_HEADER]: "1" } });
+  }
+
+  /**
    * Every context-bearing request keeps the chat's provider, including
    * summaries, compaction and children: a model of another provider never
    * reaches the gateway. One of the same provider (`switchable`) goes as asked;

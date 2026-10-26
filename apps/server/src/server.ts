@@ -215,6 +215,7 @@ import { describeIgnored, type McpAllowEntry } from "./mcp-allow/mcp-allow.mjs";
 import { omnirushModelWantsReasoningSummary, readOmniRushModelCatalog } from "./omnirush-model-catalog.js";
 import { modelAllowedIn, modelModes, projectMode, serverModelStart } from "./model-modes/model-modes.mjs";
 import { switchableModels } from "./model-modes/strict-sessions.mjs";
+import { OMNIRUSH_PROVIDER_ID } from "./provider-lock/provider-lock.mjs";
 import { serverLocalBox } from "./box/launch.js";
 import {
   SUBAGENT_MODEL_FALLBACK_TRACE,
@@ -371,6 +372,7 @@ export function stopTurnActivity(config: ServerConfig): void {
 const voiceServicesByServer = new WeakMap<ServerConfig, OmniRushVoiceService>();
 /** The broker's integrity read (rate-limited there), per server, for the checklist bar's "Good session ★". */
 const sessionIntegrityByServer = new WeakMap<ServerConfig, OmniRushGatewayBroker["sessionIntegrity"]>();
+const modelSwitchRefusalsByServer = new WeakMap<ServerConfig, OmniRushGatewayBroker["modelSwitchRefusal"]>();
 
 /** Recent gateway fallbacks per sub-agent session, for the swarm plugin's task-result note. */
 const subagentGatewayFallbacks = new WeakMap<ServerConfig, Map<string, Array<Record<string, unknown>>>>();
@@ -1377,6 +1379,7 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     }));
   }
   if (gatewayBroker.enabled) sessionIntegrityByServer.set(config, (sessionId, options) => gatewayBroker.sessionIntegrity(sessionId, options));
+  if (gatewayBroker.enabled) modelSwitchRefusalsByServer.set(config, (sessionId, model) => gatewayBroker.modelSwitchRefusal(sessionId, model));
   if (gatewayBroker.enabled) sideCallsByServer.set(config, brokerSideCall(gatewayBroker, config.omnirushEngineToken ?? ""));
   if (gatewayBroker.enabled) computerUseCapabilitiesByServer.set(config, (maxAgeMs) => gatewayBroker.sessionUploadCapabilities({ strict: true, maxAgeMs }));
   voiceServicesByServer.set(config, new OmniRushVoiceService(gatewayBroker, {
@@ -2249,6 +2252,17 @@ export async function proxyOpencodeV2Request(input: {
     body = JSON.stringify({ ...sessionInput, location: { directory: input.workspace.path } });
     headers.delete("content-length");
     headers.set("content-type", "application/json");
+  }
+  // A chat's model switch (POST /api/session/:id/model) to another provider is refused here, as its next request
+  // would be: the engine session keeps the chat's own model, so its compaction and later turns still run.
+  if (method === "POST" && sessionId && /^\/api\/session\/[^/]+\/model$/.test(routePath) && requestBody) {
+    let pick: unknown = null;
+    try { pick = JSON.parse(new TextDecoder().decode(requestBody)); } catch { pick = null; }
+    const model = isRecord(pick) && isRecord(pick.model) ? pick.model : null;
+    if (model && model.providerID === OMNIRUSH_PROVIDER_ID && typeof model.id === "string") {
+      const refusal = await modelSwitchRefusalsByServer.get(input.config)?.(sessionId, model.id);
+      if (refusal) return refusal;
+    }
   }
   // Archiving (archived-chats.ts): the app's own flag, taken off the PATCH before the engine sees it.
   if (method === "PATCH" && sessionId && /^\/api\/session\/[^/]+$/.test(routePath) && requestBody) {
