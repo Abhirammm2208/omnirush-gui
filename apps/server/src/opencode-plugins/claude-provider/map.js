@@ -15,6 +15,8 @@
 //   status-less error is retried, and the turn would run twice).
 
 export const NOTE_COMPACTED = "Claude compacted the conversation.";
+/** A template heading of the engine's compaction summary: without one the engine asks again (and Claude would compact twice). */
+export const COMPACTION_HEADING = "## Important Context";
 
 const ERROR_MARK = Symbol.for("vercel.ai.error");
 const API_ERROR_MARK = Symbol.for("vercel.ai.error.AI_APICallError");
@@ -78,7 +80,10 @@ function failure(result) {
 }
 
 export class ClaudeStreamMapper {
-  constructor() {
+  /** `compaction`: the turn is the engine's compaction, run as Claude's /compact; its summary is the turn's text. */
+  constructor({ compaction = false } = {}) {
+    this.compaction = compaction;
+    this.summary = null;
     this.message = null;
     this.blocks = new Map();
     this.streamed = new Set();
@@ -93,10 +98,23 @@ export class ClaudeStreamMapper {
     if (!event || typeof event !== "object" || event.parent_tool_use_id) return [];
     if (event.type === "stream_event") return this.streamEvent(event.event ?? {});
     if (event.type === "assistant") return this.assistant(event.message ?? {});
-    if (event.type === "user") return this.user(event.message ?? {});
-    if (event.type === "system" && event.subtype === "compact_boundary") return this.note(NOTE_COMPACTED);
+    if (event.type === "user") return this.compaction ? this.compacted(event.message ?? {}) : this.user(event.message ?? {});
+    if (event.type === "system" && event.subtype === "compact_boundary") return this.compaction ? [] : this.note(NOTE_COMPACTED);
+    if (event.type === "system" && event.subtype === "status" && typeof event.compact_error === "string") this.compactError = event.compact_error;
     if (event.type === "result") this.result = event;
     return [];
+  }
+
+  /** /compact's summary (the synthetic user message after the boundary) as the engine's summary text. */
+  compacted(message) {
+    const content = typeof message.content === "string" ? message.content : "";
+    if (this.summary !== null || !content || content.startsWith("<local-command")) return [];
+    const at = content.indexOf("Summary:");
+    const summary = at >= 0 ? content.slice(at + "Summary:".length) : content;
+    // What follows the summary is Claude's own note to itself (where the transcript is, carry on).
+    const tail = summary.search(/\n\s*If you need specific details from before compaction/);
+    this.summary = (tail >= 0 ? summary.slice(0, tail) : summary).trim();
+    return this.note(`${COMPACTION_HEADING}\n${NOTE_COMPACTED} Its summary:\n\n${this.summary}\n`);
   }
 
   note(text) {
@@ -177,6 +195,7 @@ export class ClaudeStreamMapper {
     const result = this.result;
     if (!result) return { type: "error", error: apiError(why) };
     if (result.is_error || result.subtype !== "success") return { type: "error", error: apiError(failure(result)) };
+    if (this.compaction && this.summary === null) return { type: "error", error: apiError(`Claude could not compact the conversation${this.compactError ? `: ${this.compactError}` : "."}`) };
     return { type: "finish", finishReason: { unified: "stop", raw: result.stop_reason ?? "end_turn" }, usage: turnUsage(this.usage, result.usage ?? {}) };
   }
 }

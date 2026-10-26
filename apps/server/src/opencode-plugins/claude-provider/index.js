@@ -216,7 +216,7 @@ class ClaudeCodeModel {
     try { await ensureClaude({ shell, env, cwd: root, home: boxHome, run }); } catch (error) { throw apiError(error?.message || "Claude Code could not be installed in the sandbox."); }
 
     const child = spawn(shell, ["-c", 'exec "$0" "$@"', BOX_BIN, ...claudeArgs({ model: this.modelId, uuid, resume })], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    const mapper = new ClaudeStreamMapper();
+    const mapper = new ClaudeStreamMapper({ compaction });
     let stderr = "";
     let done = false;
     let stopped = false;
