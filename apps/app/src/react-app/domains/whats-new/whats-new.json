@@ -14,7 +14,8 @@
         "Right after OmniRush renews your sign-in, the first message no longer fails with a sign-in error.",
         "A message being retried after a server error is no longer sent on a model you picked meanwhile; send it again to use the new model.",
         "On Windows, when WSL can't run its virtual machine (virtualisation off, or Windows itself in a VM), the sandbox now says so at once instead of hanging.",
-        "The \"No free seat\" notice now says 5 minutes, the time OmniRush actually waits for a seat."
+        "The \"No free seat\" notice now says 5 minutes, the time OmniRush actually waits for a seat.",
+        "On a Mac, the Terminal tab title no longer shows OmniRush's environment, and the sandbox's access key no longer appears in the list of running processes."
       ]
     },
     {
