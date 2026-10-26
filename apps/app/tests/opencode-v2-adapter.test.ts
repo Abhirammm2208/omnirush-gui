@@ -627,6 +627,15 @@ describe("OpenCode v2 event translation", () => {
     ]);
   });
 
+  test("a failed execution keeps the provider's HTTP status for the auto retry", () => {
+    expect(translateV2Event({
+      type: "session.execution.failed",
+      properties: { sessionID: "ses_2", error: { type: "provider.invalid-request", message: "This chat runs on gpt-6-astra.", status: 400 } },
+    }, createV2EventTranslationState())?.[0]?.properties).toMatchObject({
+      error: { name: "UnknownError", data: { message: "This chat runs on gpt-6-astra.", statusCode: 400 } },
+    });
+  });
+
   test("translates captured permission events for the child session while preserving busy and idle", () => {
     const state = createV2EventTranslationState();
     const translated = [

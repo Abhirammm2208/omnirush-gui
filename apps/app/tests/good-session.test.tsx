@@ -609,6 +609,17 @@ describe("how the last turn ended (session_qc._completion)", () => {
     expect(retryable([prompt(), assistant("a", [{ type: "text", text: "Half done" }], { finish: "length" })])).toBe(false);
   });
 
+  test("retryable: any 4xx but 408 and 429 is final, whatever its words (as the CLI)", () => {
+    const retryable = (status: number, type = "APIError") => messageFacts([prompt(), errorMessage({
+      kind: "generic", title: "Claude Opus 5.5 isn't on your account yet", technicalDetails: `Error type: ${type}\nMessage: no\nStatus: ${status}`,
+    })]).retryable;
+    for (const status of [400, 401, 403, 404, 409, 413, 422]) expect(retryable(status)).toBe(false);
+    for (const status of [408, 429, 500, 502, 503]) expect(retryable(status)).toBe(true);
+    expect(messageFacts([prompt(), errorMessage({
+      kind: "provider-incomplete", title: "cut", technicalDetails: "Error type: UnknownError\nMessage: no\nStatus: 400",
+    })]).retryable).toBe(false);
+  });
+
   test("retryable: never what the gateway marks final in error.omnirush, whatever its words", () => {
     const retryable = (omnirush: Record<string, unknown>) => messageFacts([prompt(), errorMessage({
       kind: "generic", title: "Something new", technicalDetails: "Error type: APIError\nStatus: 429", omnirush,
@@ -628,8 +639,8 @@ describe("how the last turn ended (session_qc._completion)", () => {
     ]) {
       expect(retryable({ technicalDetails: details })).toBe(false);
     }
-    expect(retryable({ technicalDetails: "Error type: APIError\nStatus: 400", noRetry: true })).toBe(false);
-    expect(retryable({ technicalDetails: "Error type: APIError\nStatus: 400" })).toBe(true);
+    expect(retryable({ technicalDetails: "Error type: APIError\nStatus: 503", noRetry: true })).toBe(false);
+    expect(retryable({ technicalDetails: "Error type: APIError\nStatus: 503" })).toBe(true);
   });
 
   test("replyOpen: the last reply has no end time and no error yet (the engine's idle comes first)", () => {

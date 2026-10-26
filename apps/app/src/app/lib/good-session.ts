@@ -815,7 +815,10 @@ const REFUSAL = /(^|Message: )omnirush\.ai:|daily_grant_exhausted|request_policy
 function errorEnding(error: Record<string, unknown>): { ended: LastTurnEnd; retryable: boolean } {
   if (error.kind === "aborted") return { ended: "stopped", retryable: false };
   // The gateway marking it final (`error.omnirush.retry === false`, `x-should-retry: false`) is a refusal whatever its words.
+  // Any 4xx but a timeout (408) or a rate limit (429) answers that very request: sending it again cannot help (as the CLI).
+  const status = Number(/^Status: (\d{3})$/m.exec(str(error.technicalDetails))?.[1]);
   const refusal = record(error.omnirush).retry === false || error.noRetry === true
+    || (status >= 400 && status < 500 && status !== 408 && status !== 429)
     || REFUSAL.test(`${str(error.title)}\n${str(error.technicalDetails)}`) || Boolean(str(record(error.action).link));
   if (/^Error type: APIError$/m.test(str(error.technicalDetails))) return { ended: "gateway", retryable: !refusal };
   return { ended: "cut", retryable: !refusal && (error.kind === "provider-timeout" || error.kind === "provider-incomplete") };

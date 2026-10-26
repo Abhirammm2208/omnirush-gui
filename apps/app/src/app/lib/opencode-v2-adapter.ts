@@ -507,7 +507,7 @@ function mapV2Message(value: unknown, sessionID: string): V2MappedMessage | null
       },
       // A step the person stopped is the 1.x MessageAbortedError (stopped, never retried: good-session.ts).
       ...(role === "assistant" && error
-        ? { error: { name: readString(error, "type") === "aborted" ? "MessageAbortedError" : "UnknownError", data: { message: errorMessage(error) } } }
+        ? { error: { name: readString(error, "type") === "aborted" ? "MessageAbortedError" : "UnknownError", data: { message: errorMessage(error), ...errorStatus(error) } } }
         : {}),
     },
     parts,
@@ -657,6 +657,12 @@ function mapDefaultModels(value: unknown): Record<string, string> {
     if (typeof item === "string") defaults[key] = item;
   }
   return defaults;
+}
+
+/** The provider's HTTP status of a 2.x error, as the 1.x `statusCode` (good-session.ts reads it for auto retry). */
+function errorStatus(value: unknown): { statusCode?: number } {
+  const status = isRecord(value) ? readNumber(value, "status") ?? readNumber(readRecord(value, "error"), "status") : undefined;
+  return status === undefined ? {} : { statusCode: status };
 }
 
 function errorMessage(value: unknown): string {
@@ -870,7 +876,7 @@ export function translateV2Event(
     return [{ type, properties: {
       ...properties, sequence: readNumber(value.durable, "seq"),
       ...(type === "session.execution.failed" ? {
-        error: { name: "UnknownError", data: { message: errorMessage(properties.error) } },
+        error: { name: "UnknownError", data: { message: errorMessage(properties.error), ...errorStatus(properties.error) } },
       } : {}),
     } }];
   }
