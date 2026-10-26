@@ -1,3 +1,5 @@
 packages/sdk/src/gen/** linguist-generated=true
 # Recorded model streams: byte-exact SSE framing (CRLF-free, ends with a blank line).
 apps/server/src/__fixtures__/*.sse -text -whitespace
+# The Claude provider ships byte for byte as the CLI does (PARITY.sha256): never converted to CRLF on checkout.
+apps/server/src/opencode-plugins/claude-provider/* text eol=lf
