@@ -1,9 +1,42 @@
 import { describe, expect, test } from "bun:test";
 
 import { resolveWorkspaceEndpoint } from "../src/app/lib/workspace-endpoint";
-import { classifyRouteSessionReadError, listRouteSessions, mergeRouteSessionLists, readRouteSessionsWithRetry } from "../src/react-app/shell/route-workspaces";
+import { classifyRouteSessionReadError, listRouteSessions, mergeRouteSessionLists, readRouteSessionsWithRetry, v2RouteSessionList } from "../src/react-app/shell/route-workspaces";
 
 describe("workspace route native session lists", () => {
+  test("2.x: the folder's chats come from the engine list and the server's by-folder list, each once", async () => {
+    const resolved = resolveWorkspaceEndpoint({ id: "ws", workspaceType: "local" }, { baseUrl: "https://local.example.test", token: "t" });
+    if (!resolved) throw new Error("Expected a local endpoint");
+    const asked: string[] = [];
+    const endpoint = { ...resolved, client: { ...resolved.client, listWorkspaceSessionsByFolder: async (id: string, limit: number, engine?: string) => {
+      asked.push(`${id}:${limit}:${engine}`);
+      // A chat stored under another spelling of the folder (real path, a git repo's root since), and one also in the engine list.
+      return [
+        { id: "ses_symlinked", title: "old", location: { directory: "/real/proj" }, time: { created: 1, updated: 9 } },
+        { id: "ses_here", title: "here", location: { directory: "/home/a/proj" }, time: { created: 1, updated: 5 } },
+      ];
+    } } };
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      expect(url).toContain("/workspace/ws/opencode2/api/session");
+      return Response.json({ data: [
+        { id: "ses_here", title: "here", location: { directory: "/home/a/proj/" }, time: { created: 1, updated: 5 } },
+        { id: "ses_other_folder", title: "other", location: { directory: "/home/a/other" }, time: { created: 1, updated: 7 } },
+      ], cursor: {} });
+    }) as typeof fetch;
+    try {
+      const sessions = await listRouteSessions(endpoint, v2RouteSessionList, "/home/a/proj");
+      expect(sessions.map((session) => session.id)).toEqual(["ses_symlinked", "ses_here"]);
+      expect(asked).toEqual(["ws:200:v2"]);
+      // A server without the 2.x by-folder list: the engine list, kept to the folder.
+      endpoint.client.listWorkspaceSessionsByFolder = async () => { throw new Error("503 opencode_unconfigured"); };
+      expect((await listRouteSessions(endpoint, v2RouteSessionList, "/home/a/proj")).map((session) => session.id)).toEqual(["ses_here"]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   test("loads a bare session array through the local native transport input", async () => {
     const endpoint = resolveWorkspaceEndpoint({
       id: "local workspace",

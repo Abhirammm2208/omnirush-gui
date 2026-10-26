@@ -236,7 +236,7 @@ function readMessageID(value: Record<string, unknown>): string {
   return readString(value, "assistantMessageID") ?? readString(value, "messageID") ?? readString(value, "messageId") ?? "";
 }
 
-function mapV2Session(value: unknown, directory: string | undefined, eventCreated?: number): Session | null {
+export function mapV2Session(value: unknown, directory: string | undefined, eventCreated?: number): Session | null {
   const data = responseData(value);
   if (!isRecord(data)) return null;
   const source = readRecord(data, "info") ?? data;

@@ -2345,8 +2345,8 @@ export function createOmniRushServerClient(options: { baseUrl: string; token?: s
         body: payload,
         timeoutMs: timeouts.config,
       }),
-    listWorkspaceSessionsByFolder: (workspaceId: string, limit: number) =>
-      requestJson<unknown[]>(baseUrl, `/workspace/${encodeURIComponent(workspaceId)}/sessions/by-folder?limit=${limit}`, {
+    listWorkspaceSessionsByFolder: (workspaceId: string, limit: number, engine?: "v2") =>
+      requestJson<unknown[]>(baseUrl, `/workspace/${encodeURIComponent(workspaceId)}/sessions/by-folder?limit=${limit}${engine ? `&engine=${engine}` : ""}`, {
         token,
         hostToken,
         timeoutMs: 45_000,

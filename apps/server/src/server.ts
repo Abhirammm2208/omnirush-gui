@@ -2233,7 +2233,8 @@ export async function proxyOpencodeV2Request(input: {
       realpath(input.workspace.path).catch(() => input.workspace.path),
       directory ? realpath(directory).catch(() => directory) : null,
     ]);
-    if (!actual || actual !== expected) {
+    // Compared as the file system does (case on Windows and macOS), as the sidebar's by-folder list matches.
+    if (!actual || directoryMatchKey(actual) !== directoryMatchKey(expected)) {
       throw new ApiError(404, "session_not_found", "Session not found");
     }
   }
@@ -5111,6 +5112,11 @@ function createRoutes(
     }
     const requested = Number(ctx.url.searchParams.get("limit"));
     const limit = Number.isInteger(requested) && requested > 0 ? Math.min(requested, 500) : 200;
+    if (ctx.url.searchParams.get("engine") === "v2") {
+      const v2 = engineV2ByServer.get(config)?.connection();
+      if (!v2) throw new ApiError(503, "opencode_unconfigured", "The engine is not running");
+      return jsonResponse(await listEngineV2SessionsInFolder(v2, directory, limit));
+    }
     return jsonResponse(await listEngineSessionsInFolder(config, workspace, directory, limit));
   });
 
@@ -6582,6 +6588,41 @@ export async function listEngineSessionsInFolder(
   return payload
     .filter((session) => isRecord(session) && typeof session.directory === "string" && isSameSessionFolder(session.directory, directory))
     .slice(0, limit);
+}
+
+/**
+ * The 2.x engine's sessions stored for `directory`, newest first, raw: from its
+ * list of every folder, matched without case (Windows, macOS), slash
+ * direction, a trailing slash or the long-path prefix, or by real path
+ * (symlink, junction, subst drive).
+ */
+export async function listEngineV2SessionsInFolder(
+  v2: { url: string; password: string },
+  directory: string,
+  limit: number,
+  fetchImpl: (input: string, init?: RequestInit) => Promise<Response> = loopbackFetch,
+): Promise<unknown[]> {
+  const headers = new Headers({ authorization: `Basic ${Buffer.from(`opencode:${v2.password}`).toString("base64")}` });
+  const response = await fetchImpl(buildOpencodeProxyUrl(v2.url, "/api/session", `?limit=${SESSIONS_BY_FOLDER_SCAN}&order=desc`), { headers, signal: AbortSignal.timeout(45_000) });
+  if (!response.ok) {
+    throw new ApiError(response.status === 404 ? 404 : 502, "opencode_engine_unreachable", `The engine session list failed with status ${response.status}`);
+  }
+  const payload: unknown = await response.json();
+  const items = isRecord(payload) && Array.isArray(payload.data) ? payload.data : Array.isArray(payload) ? payload : [];
+  const real = await realpath(directory).catch(() => directory);
+  const base = (value: string) => directoryMatchKey(value).split("/").pop() ?? "";
+  const found: unknown[] = [];
+  for (const session of items) {
+    const location = isRecord(session) && isRecord(session.location) ? session.location : null;
+    const folder = location && typeof location.directory === "string" ? location.directory : "";
+    if (!folder) continue;
+    // Real paths are read only for a folder of the same name: a scan of every chat stays cheap.
+    const same = isSameSessionFolder(folder, directory) || isSameSessionFolder(folder, real)
+      || ((base(folder) === base(directory) || base(folder) === base(real)) && isSameSessionFolder(await realpath(folder).catch(() => folder), real));
+    if (same) found.push(session);
+    if (found.length >= limit) break;
+  }
+  return found;
 }
 
 /**

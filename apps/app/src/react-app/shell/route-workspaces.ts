@@ -6,7 +6,7 @@
 import type { Session } from "@opencode-ai/sdk/v2/client";
 
 import { unwrap } from "@/app/lib/opencode";
-import { createClientV2 } from "@/app/lib/opencode-v2-adapter";
+import { createClientV2, mapV2Session } from "@/app/lib/opencode-v2-adapter";
 import { deleteNativeSession, unwrapNativeSessionResult } from "@/app/lib/opencode-session-native";
 import { OmniRushServerError, type OmniRushWorkspaceInfo } from "@/app/lib/omnirush-server";
 import type { ResolvedWorkspaceEndpoint } from "@/app/lib/workspace-endpoint";
@@ -41,6 +41,8 @@ type RouteSessionListResult =
 export type RouteSessionListTransport = (input: {
   endpoint: ResolvedWorkspaceEndpoint;
   limit: number;
+  /** The workspace folder, for a list that is not scoped to it yet. */
+  directory?: string;
 }) => Promise<RouteSessionListResult>;
 
 const nativeRouteSessionList: RouteSessionListTransport = async ({ endpoint, limit }) => {
@@ -83,10 +85,27 @@ export function mergeRouteSessionLists(
   return { data: merged.slice(0, limit), request: byProject.request, response: byProject.response ?? new Response(null, { status: 200 }) };
 }
 
-export const v2RouteSessionList: RouteSessionListTransport = async ({ endpoint, limit }) =>
-  createClientV2(`${endpoint.mountedBaseUrl}/opencode2`, undefined, {
-    token: endpoint.token,
-  }).session.list({ limit });
+/**
+ * The 2.x engine's chats of this folder: its list (every folder, newest first)
+ * kept to the folder, merged with the local server's by-folder list, which
+ * also matches the folder by real path and scans further back.
+ */
+export const v2RouteSessionList: RouteSessionListTransport = async ({ endpoint, limit, directory }) => {
+  const [listed, byFolder] = await Promise.all([
+    createClientV2(`${endpoint.mountedBaseUrl}/opencode2`, undefined, { token: endpoint.token }).session.list({ limit }),
+    endpoint.isRemote
+      ? Promise.resolve(null)
+      : endpoint.client.listWorkspaceSessionsByFolder(endpoint.workspaceId, limit, "v2").catch(() => null),
+  ]);
+  const root = normalizeDirectoryPath(directory ?? "");
+  const scoped: RouteSessionListResult = root && listed.data
+    ? { data: listed.data.filter((session) => normalizeDirectoryPath(session?.directory ?? "") === root), request: listed.request, response: listed.response }
+    : listed as RouteSessionListResult;
+  const folder = Array.isArray(byFolder)
+    ? byFolder.flatMap((item) => mapV2Session(item, directory) ?? []) as RouteSession[]
+    : null;
+  return mergeRouteSessionLists(scoped, folder, limit);
+};
 
 /** Resolve the owning server's engine even when this workspace isn't selected. */
 async function routeSessionEndpoint(endpoint: ResolvedWorkspaceEndpoint): Promise<ResolvedWorkspaceEndpoint> {
@@ -160,8 +179,9 @@ export async function removeRouteWorkspace(input: {
 export async function listRouteSessions(
   endpoint: ResolvedWorkspaceEndpoint,
   transport: RouteSessionListTransport = nativeRouteSessionList,
+  directory?: string,
 ): Promise<RouteSession[]> {
-  return unwrapNativeSessionResult(await transport({ endpoint, limit: 200 }));
+  return unwrapNativeSessionResult(await transport({ endpoint, limit: 200, ...(directory ? { directory } : {}) }));
 }
 
 export function mapDesktopWorkspace(workspace: WorkspaceInfo): RouteWorkspace {

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { isSameSessionFolder, listEngineSessionsInFolder } from "./server.js";
+import { isSameSessionFolder, listEngineSessionsInFolder, listEngineV2SessionsInFolder } from "./server.js";
 import type { ServerConfig, WorkspaceInfo } from "./types.js";
 
 describe("isSameSessionFolder", () => {
@@ -78,5 +81,39 @@ describe("listEngineSessionsInFolder", () => {
     expect(await listEngineSessionsInFolder(config, workspace, workspace.path, 2, async () => Response.json(many))).toHaveLength(2);
     await expect(listEngineSessionsInFolder(config, workspace, workspace.path, 2, async () => new Response("no", { status: 500 })))
       .rejects.toMatchObject({ status: 502 });
+  });
+});
+
+describe("listEngineV2SessionsInFolder", () => {
+  test("keeps this folder's 2.x chats from the engine's list of every folder, also under its real path", async () => {
+    const root = mkdtempSync(join(tmpdir(), "omnirush-v2-by-folder-"));
+    try {
+      const real = join(root, "real", "proj");
+      mkdirSync(real, { recursive: true });
+      const link = join(root, "proj");
+      symlinkSync(real, link);
+      const requests: Request[] = [];
+      const sessions = await listEngineV2SessionsInFolder({ url: "http://engine.invalid", password: "pw" }, link, 10, async (input, init) => {
+        requests.push(new Request(input, init));
+        return Response.json({ data: [
+          { id: "ses_link", location: { directory: link } },
+          { id: "ses_other", location: { directory: join(root, "other") } },
+          { id: "ses_real", location: { directory: real } },
+          { id: "ses_slash", location: { directory: `${link}/` } },
+          { id: "ses_none" },
+        ], cursor: {} });
+      });
+      expect(sessions.map((session) => (session as { id: string }).id)).toEqual(["ses_link", "ses_real", "ses_slash"]);
+      const url = new URL(requests[0]!.url);
+      expect(url.pathname).toBe("/api/session");
+      expect(url.searchParams.get("directory")).toBeNull();
+      expect(url.searchParams.get("limit")).toBe("2000");
+      expect(requests[0]!.headers.get("authorization")).toBe(`Basic ${Buffer.from("opencode:pw").toString("base64")}`);
+      expect(await listEngineV2SessionsInFolder({ url: "http://engine.invalid", password: "pw" }, link, 1, async () => Response.json({ data: [{ id: "a", location: { directory: link } }, { id: "b", location: { directory: link } }] }))).toHaveLength(1);
+      await expect(listEngineV2SessionsInFolder({ url: "http://engine.invalid", password: "pw" }, link, 2, async () => new Response("no", { status: 500 })))
+        .rejects.toMatchObject({ status: 502 });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
