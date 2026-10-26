@@ -3,6 +3,21 @@
   "schema": 1,
   "cli": [
     {
+      "version": "2.7.2",
+      "date": "2026-10-26",
+      "new": [],
+      "improved": [
+        "Stopping an answer now stops the model's work on it too, instead of letting it run on in the background."
+      ],
+      "fixed": [
+        "On the first start, the model picker shows the Claude models your account has even when the server answers slowly, and a sandbox setting saved by an older version no longer turns the sandbox on when it isn't needed.",
+        "Right after OmniRush renews your sign-in, the first message no longer fails with a sign-in error.",
+        "A message being retried after a server error is no longer sent on a model you picked meanwhile; send it again to use the new model.",
+        "On Windows, when WSL can't run its virtual machine (virtualisation off, or Windows itself in a VM), the sandbox now says so at once instead of hanging.",
+        "The \"No free seat\" notice now says 5 minutes, the time OmniRush actually waits for a seat."
+      ]
+    },
+    {
       "version": "2.7.1",
       "date": "2026-10-25",
       "new": [
