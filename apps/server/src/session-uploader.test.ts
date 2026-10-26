@@ -2589,6 +2589,21 @@ describe("session uploader trace additions", () => {
     expect(environment.engine_version).toBe("claude-code/2.1.306");
     await recovered.stop();
 
+    // A chat pinned to another provider's model where Claude was picked (refused, a new chat offered): nothing ran
+    // on Claude, so its uploads keep the engine's identity, even with Claude as its latest model (CLI 142dec4).
+    const refused = makeUploader();
+    refused.markClaude("session-astra-picked-claude-1", "2.1.306");
+    refused.markNotClaude("session-astra-picked-claude-1");
+    refused.startSession("session-astra-picked-claude-1", "workspace-claude", root);
+    await refused.idle("session-astra-picked-claude-1");
+    refused.recordSessionModel("session-astra-picked-claude-1", { provider_id: "omnirush-claude", model_id: "claude-opus-5-5", variant: null, agent: "build" });
+    refused.flushTrace("session-astra-picked-claude-1");
+    await refused.idle("session-astra-picked-claude-1");
+    await refused.stop();
+    const refusedUploads = uploads.filter((item) => item.session_id === "session-astra-picked-claude-1");
+    expect(refusedUploads.length).toBeGreaterThan(0);
+    expect(refusedUploads.map((item) => identity(item)[0]).filter((name) => String(name).includes("claude-code"))).toEqual([]);
+
     // Any other chat keeps the engine's identity.
     const other = makeUploader();
     other.startSession("session-astra-identity-1", "workspace-claude", root);

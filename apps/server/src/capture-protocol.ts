@@ -20,6 +20,7 @@ export type CaptureStopOptions = { archiveFinals: boolean };
 /** CaptureHost methods callable from the main thread, with their arguments. */
 export type CaptureCalls = {
   markClaude: [sessionId: string, version: string];
+  markNotClaude: [sessionId: string];
   startSession: [sessionId: string, workspaceId: string, root: string, turnsBefore?: number];
   boxSession: [sessionId: string, box: BoxCaptureInfo | null];
   sessionPolicy: [sessionId: string];
@@ -177,6 +178,8 @@ export function invokeCapture(host: CaptureHost, call: CaptureCall): unknown {
   switch (call.method) {
     case "markClaude":
       return host.markClaude(...call.args);
+    case "markNotClaude":
+      return host.markNotClaude(...call.args);
     case "startSession":
       return host.startSession(...call.args);
     case "boxSession":

@@ -4750,6 +4750,8 @@ export class SessionUploader {
   private readonly computerUse = new Map<string, ComputerUseEnvironment>();
   /** Claude chats (markClaude): their Claude Code version. */
   private readonly claudeChats = new Map<string, string>();
+  /** Chats pinned to another provider (markNotClaude). */
+  private readonly notClaudeChats = new Set<string>();
   private readonly boxToolchains: ToolchainCache | null;
   private readonly excludedHashes: HashCache = new Map();
   private spoolCounter = 0;
@@ -5280,12 +5282,20 @@ export class SessionUploader {
     const computerUse = this.computerUse.get(sessionId) ?? null;
     // A Claude chat: Claude Code is the harness, run in the box under this engine, whose stored events the upload holds (the CLI: the same).
     // Also a reopened or recovered chat before its next prompt: the model its stored messages name (a recovered state is not among this.sessions).
-    const claude = this.claudeChats.get(sessionId) ?? ((model ?? this.sessions.get(sessionId)?.model)?.provider_id === CLAUDE_PROVIDER_ID ? CLAUDE_CODE_VERSION : undefined);
+    const claude = this.notClaudeChats.has(sessionId) ? undefined : this.claudeChats.get(sessionId) ?? ((model ?? this.sessions.get(sessionId)?.model)?.provider_id === CLAUDE_PROVIDER_ID ? CLAUDE_CODE_VERSION : undefined);
     const harness = claude ? { engine_version: `claude-code/${claude}`, harness: { name: "claude-code", engine: "claude-code", version: claude, build_tag: environment.harness.build_tag, host_engine: environment.engine_version, runtime: "box", engine_schema: "opencode-v2" }, engine_schema: "opencode-v2" } as unknown as Partial<UploadEnvironment> : {};
     return { ...environment, ...harness, ...boxEnvironment(environment, box?.label ?? null), ...(toolchain ? { toolchain } : {}), ...(box ? { sandbox: box.label } : {}), ...(importedFrom ? { imported_from: importedFrom } : {}), ...(mcpServers ? { mcp_servers: mcpServers } : {}), ...(computerUse ? { computer_use: computerUse } : {}) };
   }
 
   /** A Claude chat (opencode-plugins/claude-provider) and its Claude Code version. */
+  /** A chat pinned to another provider's model: a Claude pick refused in it never makes its uploads name Claude Code (CLI: the same). */
+  markNotClaude(sessionId: string): void {
+    if (!sessionId) return;
+    this.claudeChats.delete(sessionId);
+    this.notClaudeChats.add(sessionId);
+    while (this.notClaudeChats.size > 512) this.notClaudeChats.delete(this.notClaudeChats.values().next().value as string);
+  }
+
   markClaude(sessionId: string, version: string): void {
     if (!sessionId || !version) return;
     this.claudeChats.set(sessionId, version);

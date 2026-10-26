@@ -258,7 +258,7 @@ import { GOOD_SESSION_ID_PATTERN, readGoodSession } from "./omnirush-good-sessio
 import { PROJECT_ARCHIVE_BASE_IDLE_MS, PROJECT_ARCHIVE_BASE_MAX_DEFER_MS, projectArchiveSettings } from "./project-archive.js";
 import type { ArchiveApiRequestInit } from "./session-archive/upload.js";
 import { runtimeStorageDir } from "./runtime-db.js";
-import { CLAUDE_AUTO_NOTE, CLAUDE_CODE_VERSION, CLAUDE_PROVIDER_ID, claudeChatRoute, type ClaudeChatInput } from "./claude-code/chat.js";
+import { CLAUDE_AUTO_NOTE, CLAUDE_CODE_VERSION, CLAUDE_PROVIDER_ID, chatPinRules, claudeChatRoute, type ClaudeChatInput } from "./claude-code/chat.js";
 import { claudeConfigDirOf, uploadClaudeTurn } from "./claude-code/native.js";
 import { prepareDesktopInstallLog } from "./install-log-host.js";
 import pkg from "../package.json" with { type: "json" };
@@ -373,6 +373,8 @@ const voiceServicesByServer = new WeakMap<ServerConfig, OmniRushVoiceService>();
 /** The broker's integrity read (rate-limited there), per server, for the checklist bar's "Good session ★". */
 const sessionIntegrityByServer = new WeakMap<ServerConfig, OmniRushGatewayBroker["sessionIntegrity"]>();
 const modelSwitchRefusalsByServer = new WeakMap<ServerConfig, OmniRushGatewayBroker["modelSwitchRefusal"]>();
+/** The model a chat is pinned to at the gateway (null before its first model request). */
+const chatPinsByServer = new WeakMap<ServerConfig, (sessionId: string) => string | null>();
 /** Each server's Claude turn route (claude-code/chat.ts) and the key its engine's Claude provider sends. */
 const claudeTurnsByServer = new WeakMap<ServerConfig, { key: string; handle: ReturnType<typeof claudeChatRoute> }>();
 
@@ -1426,6 +1428,7 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
   }
   if (gatewayBroker.enabled) sessionIntegrityByServer.set(config, (sessionId, options) => gatewayBroker.sessionIntegrity(sessionId, options));
   if (gatewayBroker.enabled) modelSwitchRefusalsByServer.set(config, (sessionId, model) => gatewayBroker.modelSwitchRefusal(sessionId, model));
+  if (gatewayBroker.enabled) chatPinsByServer.set(config, (sessionId) => gatewayBroker.chatModel(sessionId));
   if (gatewayBroker.enabled) sideCallsByServer.set(config, brokerSideCall(gatewayBroker, config.omnirushEngineToken ?? ""));
   if (gatewayBroker.enabled) computerUseCapabilitiesByServer.set(config, (maxAgeMs) => gatewayBroker.sessionUploadCapabilities({ strict: true, maxAgeMs }));
   voiceServicesByServer.set(config, new OmniRushVoiceService(gatewayBroker, {
@@ -2398,8 +2401,11 @@ export async function proxyOpencodeV2Request(input: {
     ? sessionId
     : null;
   const engine = capture && uploadedSessionId ? engineTarget(input.connection.url, headers, target.search, "v2") : null;
+  // The model the chat is pinned to: a chat on Claude, or one on another provider where Claude was picked (CLI: beforePromptDispatch).
+  const pinRules = chatPinRules(uploadedSessionId ? chatPinsByServer.get(input.config)?.(uploadedSessionId) ?? null : null);
   // Automatic compaction (session-archive/auto-compact.ts), as on the 1.x engine (auto-compact-engine.ts: the 2.x calls).
-  const autoCompactor = engine && uploadedSessionId ? autoCompactorsByServer.get(input.config) : undefined;
+  // A Claude chat is left out: Claude Code compacts its own conversation.
+  const autoCompactor = engine && uploadedSessionId && pinRules.autoCompact ? autoCompactorsByServer.get(input.config) : undefined;
   if (autoCompactor && engine && uploadedSessionId) {
     const outcome = await autoCompactor.beforePrompt(uploadedSessionId, desktopAutoCompactEngine(engine, uploadedSessionId), body)
       .catch((error: unknown): AutoCompactOutcome => ({ action: "failed", reason: error instanceof Error ? error.message : String(error) }));
@@ -2424,7 +2430,9 @@ export async function proxyOpencodeV2Request(input: {
     capture.boxSession(uploadedSessionId, boxInfo);
     capture.permissionMode(await capturePermissionMode(input.config));
     // A Claude chat's uploads name Claude Code from its first one, also after a restart (its grant comes later). CLI: beforePromptDispatch.
-    if (await engineChatProvider(engine, uploadedSessionId) === CLAUDE_PROVIDER_ID) capture.markClaude(uploadedSessionId, CLAUDE_CODE_VERSION);
+    // A chat pinned to another provider's model stays that chat (a Claude pick is refused there and a new chat offered).
+    if (pinRules.identity === "not-claude") capture.markNotClaude(uploadedSessionId);
+    else if (await engineChatProvider(engine, uploadedSessionId) === CLAUDE_PROVIDER_ID) capture.markClaude(uploadedSessionId, CLAUDE_CODE_VERSION);
     capture.startSession(uploadedSessionId, input.workspace.id, input.workspace.path, turnsBefore);
     // The turn before's background processes finish writing (at most 10 s after it ended), its project
     // delta is taken (at most 5 s more, only when it ended a moment ago), then capture v2's session-start

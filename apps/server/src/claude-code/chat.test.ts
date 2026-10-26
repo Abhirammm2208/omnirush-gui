@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { CLAUDE_CODE_VERSION, CLAUDE_CONTRACT, claudeChatRoute } from "./chat.js";
+import { CLAUDE_CODE_VERSION, CLAUDE_CONTRACT, chatPinRules, claudeChatRoute } from "./chat.js";
 import type { ClaudeAccess, ClaudeAuthorization, ClaudeGrant } from "./access.js";
 // @ts-expect-error The shared provider is plain JavaScript (opencode-plugins/claude-provider, PARITY with the CLI).
 import { CLAUDE_CODE_VERSION as PROVIDER_VERSION, CONTRACT as PROVIDER_CONTRACT } from "../opencode-plugins/claude-provider/index.js";
@@ -72,4 +72,12 @@ describe("Claude turn route", () => {
     expect(await handle({ op: "grant", sessionID: "ses_a", model: "gpt-6-astra" })).toMatchObject({ ok: false });
     expect(await handle({ op: "grant", model: "claude-opus-5-5" })).toMatchObject({ ok: false });
   });
+});
+
+test("a chat pin: no automatic compaction on Claude, the engine's identity on another provider's model (CLI: beforePromptDispatch)", () => {
+  expect(chatPinRules("claude-opus-5-5")).toEqual({ autoCompact: false, identity: "engine" });
+  // An Astra chat where Claude was picked (refused, a new chat offered): compacts as before and never names Claude Code.
+  expect(chatPinRules("gpt-6-astra")).toEqual({ autoCompact: true, identity: "not-claude" });
+  // No pin yet (a new chat's first prompt): the engine's chat model decides.
+  expect(chatPinRules(null)).toEqual({ autoCompact: true, identity: "engine" });
 });

@@ -75,3 +75,18 @@ export function claudeChatRoute(deps: {
     return { ok: true, token: grant.token, baseUrl: grant.baseUrl.replace(/\/+$/, ""), client: grant.client };
   };
 }
+
+/** Whether a model id is one of Claude's. shortcut: by its id prefix, as the gateway names them; upgrade to the account's catalog if a Claude id ever starts otherwise. */
+export function isClaudeModelId(id: string | null | undefined): boolean {
+  return typeof id === "string" && id.startsWith("claude-");
+}
+
+/**
+ * What a prompt's chat pin (the model the gateway bound the chat to, null before its first model request) means
+ * before the prompt goes on (CLI: beforePromptDispatch): a chat on Claude gets no automatic compaction (Claude Code
+ * compacts its own conversation); a chat on another provider's model keeps the engine's identity in its uploads,
+ * also after a refused Claude pick; otherwise the engine's chat model decides.
+ */
+export function chatPinRules(pinned: string | null): { autoCompact: boolean; identity: "not-claude" | "engine" } {
+  return { autoCompact: !isClaudeModelId(pinned), identity: pinned && !isClaudeModelId(pinned) ? "not-claude" : "engine" };
+}

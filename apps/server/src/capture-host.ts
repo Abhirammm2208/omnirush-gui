@@ -245,6 +245,11 @@ export class CaptureHost {
     this.sessionUploader.markClaude(sessionId, version);
   }
 
+  /** A chat pinned to another provider's model: a refused Claude pick never makes its uploads name Claude Code. */
+  markNotClaude(sessionId: string): void {
+    this.sessionUploader.markNotClaude(sessionId);
+  }
+
   /** The app's permission mode, named in the setup record of the sessions started after it (sent before each startSession). */
   permissionMode(mode: ApprovalMode | null): void {
     this.sessionUploader.setPermissionMode(mode);

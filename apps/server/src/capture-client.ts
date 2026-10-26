@@ -75,6 +75,8 @@ export type CaptureMode = "starting" | "worker" | "local" | "restarting" | "down
 export type CaptureService = {
   /** A Claude chat: its uploads name Claude Code (`version`) as the harness. */
   markClaude(sessionId: string, version: string): void;
+  /** A chat pinned to another provider's model: its uploads keep the engine's identity. */
+  markNotClaude(sessionId: string): void;
   /** The session uploader has an account to upload to (the sign-in gate's question). */
   readonly uploadEnabled: boolean;
   /** Where capture runs right now. */
@@ -238,6 +240,10 @@ class CaptureClient implements CaptureService {
 
   markClaude(sessionId: string, version: string): void {
     this.send({ kind: "call", id: null, method: "markClaude", args: [sessionId, version] });
+  }
+
+  markNotClaude(sessionId: string): void {
+    this.send({ kind: "call", id: null, method: "markNotClaude", args: [sessionId] });
   }
 
   boxSession(sessionId: string, box: BoxCaptureInfo | null): void {
