@@ -203,7 +203,8 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
   const [client, setClient] = useState<OmniRushServerClient | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [token, setToken] = useState("");
-  const [engineV2ChatRouting, setEngineV2ChatRouting] = useState(false);
+  // The app ships only the 2.x engine: chats route there until a server says otherwise.
+  const [engineV2ChatRouting, setEngineV2ChatRouting] = useState(true);
   const [engineRoutingReady, setEngineRoutingReady] = useState(false);
   const engineV2ChatRoutingRef = useRef(engineV2ChatRouting);
   engineV2ChatRoutingRef.current = engineV2ChatRouting;
@@ -1247,7 +1248,7 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
   const routingServerToken = selectedWorkspaceEndpoint?.token ?? "";
   useEffect(() => {
     if (!routingServerUrl || !routingServerToken) {
-      setEngineV2ChatRouting(false);
+      setEngineV2ChatRouting(true);
       return;
     }
     const omnirushClient = createOmniRushServerClient({ baseUrl: routingServerUrl, token: routingServerToken });
@@ -1262,11 +1263,14 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
       } catch (error) {
         if (cancelled) return;
         // Older servers do not expose the preview endpoint and use v1.
-        if (error instanceof OmniRushServerError && error.status === 404) setEngineRoutingReady(true);
+        if (error instanceof OmniRushServerError && error.status === 404) {
+          setEngineV2ChatRouting(false);
+          setEngineRoutingReady(true);
+        }
         console.warn("[opencode-v2] failed to read chat routing status; retaining the current engine", error);
       }
     };
-    setEngineV2ChatRouting(false);
+    setEngineV2ChatRouting(true);
     setEngineRoutingReady(false);
     void refresh();
     window.addEventListener("omnirush-server-settings-changed", refresh);
