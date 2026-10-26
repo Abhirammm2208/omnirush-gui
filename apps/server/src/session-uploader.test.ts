@@ -2582,6 +2582,13 @@ describe("session uploader trace additions", () => {
     expect(uploads.length).toBeGreaterThan(before);
     expect(uploads.slice(before).map(identity)).toEqual(uploads.slice(before).map(() => ["claude-code/2.1.306", "claude-code"]));
 
+    // A recovered chat's state is its own (not among the open sessions): its model is passed in.
+    const recovered = makeUploader();
+    const environment = await (recovered as unknown as { sessionEnvironment(root: string, id: string, waitMs?: number, model?: unknown): Promise<{ engine_version: string }> })
+      .sessionEnvironment(root, "session-claude-recovered-1", 0, { provider_id: "omnirush-claude", model_id: "claude-opus-5-5", variant: null, agent: null });
+    expect(environment.engine_version).toBe("claude-code/2.1.306");
+    await recovered.stop();
+
     // Any other chat keeps the engine's identity.
     const other = makeUploader();
     other.startSession("session-astra-identity-1", "workspace-claude", root);
