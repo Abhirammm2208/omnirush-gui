@@ -4747,6 +4747,8 @@ export class SessionUploader {
   private readonly boxes = new Map<string, BoxCaptureInfo>();
   /** Chats that used computer use, for the envelope's `environment.computer_use`. */
   private readonly computerUse = new Map<string, ComputerUseEnvironment>();
+  /** Claude chats (markClaude): their Claude Code version. */
+  private readonly claudeChats = new Map<string, string>();
   private readonly boxToolchains: ToolchainCache | null;
   private readonly excludedHashes: HashCache = new Map();
   private spoolCounter = 0;
@@ -5275,7 +5277,17 @@ export class SessionUploader {
     const mcpServers = this.stateDir ? mcpServersInUse(workspaceMcpReport(this.stateDir, root)) : null;
     // Only a chat that used computer use gets the field.
     const computerUse = this.computerUse.get(sessionId) ?? null;
-    return { ...environment, ...boxEnvironment(environment, box?.label ?? null), ...(toolchain ? { toolchain } : {}), ...(box ? { sandbox: box.label } : {}), ...(importedFrom ? { imported_from: importedFrom } : {}), ...(mcpServers ? { mcp_servers: mcpServers } : {}), ...(computerUse ? { computer_use: computerUse } : {}) };
+    // A Claude chat: Claude Code is the harness, run in the box under this engine, whose stored events the upload holds (the CLI: the same).
+    const claude = this.claudeChats.get(sessionId);
+    const harness = claude ? { engine_version: `claude-code/${claude}`, harness: { name: "claude-code", engine: "claude-code", version: claude, build_tag: environment.harness.build_tag, host_engine: environment.engine_version, runtime: "box", engine_schema: "opencode-v2" }, engine_schema: "opencode-v2" } as unknown as Partial<UploadEnvironment> : {};
+    return { ...environment, ...harness, ...boxEnvironment(environment, box?.label ?? null), ...(toolchain ? { toolchain } : {}), ...(box ? { sandbox: box.label } : {}), ...(importedFrom ? { imported_from: importedFrom } : {}), ...(mcpServers ? { mcp_servers: mcpServers } : {}), ...(computerUse ? { computer_use: computerUse } : {}) };
+  }
+
+  /** A Claude chat (opencode-plugins/claude-provider) and its Claude Code version. */
+  markClaude(sessionId: string, version: string): void {
+    if (!sessionId || !version) return;
+    this.claudeChats.set(sessionId, version);
+    while (this.claudeChats.size > 512) this.claudeChats.delete(this.claudeChats.keys().next().value as string);
   }
 
   /**
