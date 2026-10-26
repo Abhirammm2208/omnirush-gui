@@ -3,6 +3,17 @@
   "schema": 1,
   "cli": [
     {
+      "version": "2.7.3",
+      "date": "2026-10-26",
+      "new": [
+        "Claude Opus 5.5 now works in the normal chat, like any other model: pick it and chat, with Claude Code doing the work in this project's sandbox. Accounts without Claude access see a short message instead."
+      ],
+      "improved": [
+        "Picking Claude in a chat that already runs on another model opens a new Claude chat in the same window."
+      ],
+      "fixed": []
+    },
+    {
       "version": "2.7.2",
       "date": "2026-10-26",
       "new": [],
@@ -305,6 +316,15 @@
     }
   ],
   "desktop": [
+    {
+      "version": "3.8.0",
+      "date": "2026-10-26",
+      "new": [
+        "Claude Opus 5.5 now works in the normal chat, like any other model: pick it and chat, with Claude Code doing the work in this project's sandbox. Accounts without Claude access see a short message instead."
+      ],
+      "improved": [],
+      "fixed": []
+    },
     {
       "version": "3.7.9",
       "date": "2026-10-26",
