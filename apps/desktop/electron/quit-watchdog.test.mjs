@@ -40,17 +40,18 @@ test("the watchdog kills and exits only when the teardown has not finished in ti
   assert.deepEqual(quiet, []);
 });
 
-test("a real child tree (the engine and its shell) is killed", { skip: process.platform === "win32" }, async () => {
+test("a real child tree (the engine and its shell) is killed", async () => {
   // An "engine" that starts a long-lived child of its own.
   const engine = spawn(process.execPath, ["-e", "require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); setInterval(() => {}, 1000)"], { stdio: "ignore" });
   await new Promise((resolve) => setTimeout(resolve, 500));
   const before = descendantPids(listProcesses(), process.pid);
   assert.ok(before.includes(engine.pid), "the engine is listed below this process");
   assert.ok(before.length >= 2, "and its child too");
-  const exited = new Promise((resolve) => engine.once("exit", (_code, signal) => resolve(signal)));
+  const exited = new Promise((resolve) => engine.once("exit", (code, signal) => resolve(signal ?? code)));
   killDescendants();
-  assert.equal(await exited, "SIGKILL");
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  // Killed, not ended on its own (Windows: taskkill /F ends it with exit code 1).
+  assert.equal(await exited, process.platform === "win32" ? 1 : "SIGKILL");
+  await new Promise((resolve) => setTimeout(resolve, 500));
   const alive = before.filter((pid) => { try { process.kill(pid, 0); return true; } catch { return false; } });
   assert.deepEqual(alive, []);
 });
