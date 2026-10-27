@@ -14,6 +14,7 @@ import {
   probeWithEngine,
   readOnlyPrompt,
   resetFolderWriteGate,
+  setWriteCheckEngine,
   type FolderProbeOutcome,
 } from "./folder-write-check.js";
 
@@ -205,6 +206,17 @@ describe("folderWriteGate", () => {
     // Another folder for the same chat is checked.
     expect(await folderWriteGate("ses_1", "/q", options)).toBeNull();
     expect(probes).toBe(4);
+  });
+
+  test("the probe runs the 2.x engine, the one chats run on, not the 1.x binary set at start", async () => {
+    setWriteCheckEngine("/app/sidecars/opencode");
+    const ran: string[] = [];
+    const probeEngine = async (_dir: string, bin: string): Promise<FolderProbeOutcome> => { ran.push(bin); return { ok: true }; };
+    expect(await folderWriteGate("ses_v2", "/p", { env: { OMNIRUSH_OPENCODE2_BIN: "/app/sidecars/opencode2" }, probeEngine, platform: "linux" })).toBeNull();
+    // No 2.x engine named (tests, an older dev setup): the one set at start.
+    expect(await folderWriteGate("ses_v1", "/q", { env: {}, probeEngine, platform: "linux" })).toBeNull();
+    expect(ran).toEqual(["/app/sidecars/opencode2", "/app/sidecars/opencode"]);
+    setWriteCheckEngine(null);
   });
 
   test("OMNIRUSH_WRITE_CHECK=off skips it", async () => {
