@@ -336,7 +336,8 @@
       ],
       "fixed": [
         "The reasoning effort can be picked again: the effort you choose, also in the middle of a chat, is the one the next message runs at.",
-        "Claude access given to or taken from your account now shows without restarting the app, and a Claude message on an account without access is refused at once instead of after a long wait."
+        "Claude access given to or taken from your account now shows without restarting the app, and a Claude message on an account without access is refused at once instead of after a long wait.",
+        "Settings look tidier: the voice switch shows off while voice isn't available, the editor's font size uses the usual menu, Advanced no longer lists actions that can't run, and the sidebar's account line no longer gets cut off."
       ]
     },
     {
