@@ -1619,7 +1619,8 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
   // Claude chats (claude-code/chat.ts): the engine's Claude provider asks /omnirush-claude/turn, with this key, for each turn.
   const claudeKey = randomBytes(24).toString("base64url");
   const claudeTurn = claudeChatRoute({
-    access: () => gatewayBroker.claudeAccess(),
+    // Asked fresh at each turn: access taken away refuses at once (not after the relay's 403s), a grant needs no restart.
+    access: () => gatewayBroker.claudeAccess({ fresh: true }),
     authorize: (context) => gatewayBroker.claudeGrant(context),
     pin: (sessionId) => gatewayBroker.chatModel(sessionId),
     setPin: (sessionId, model) => gatewayBroker.pinChatModel(sessionId, model),

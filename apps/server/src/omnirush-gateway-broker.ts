@@ -2019,7 +2019,7 @@ export class OmniRushGatewayBroker {
       signal: AbortSignal.timeout(8_000),
     });
   });
-  claudeAccess() { return this.claudeAccessClient().access(); }
+  claudeAccess(options: { fresh?: boolean } = {}) { return this.claudeAccessClient().access(options); }
   /** Session-bound tokens stay in this host process, outside the renderer and Docker. */
   async claudeGrant(context: ClaudeAuthorization) {
     const client = this.claudeAccessClient(), grant = await client.authorize(context);

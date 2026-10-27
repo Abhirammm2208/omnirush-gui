@@ -106,6 +106,9 @@ export async function setUpClaudeSandbox(client: Pick<OmniRushServerClient, "get
   return box;
 }
 
+/** How often the open project's Claude status is read again. */
+export const CLAUDE_STATUS_POLL_MS = 30_000;
+
 type StatusClient = { claude: Pick<OmniRushServerClient["claude"], "request"> };
 
 /** The open project's Claude models, read from its server (again when the window comes back). */
@@ -127,7 +130,15 @@ export function useClaudeModelSync(client: StatusClient | null, workspaceId: str
     const onVisible = () => { if (document.visibilityState === "visible") load(); };
     load();
     document.addEventListener("visibilitychange", onVisible);
-    return () => { closed = true; document.removeEventListener("visibilitychange", onVisible); };
+    window.addEventListener("focus", load);
+    // Access given or taken away while the app runs shows without a restart (the server caches its answer 30 s).
+    const timer = setInterval(() => { if (document.visibilityState === "visible") load(); }, CLAUDE_STATUS_POLL_MS);
+    return () => {
+      closed = true;
+      clearInterval(timer);
+      window.removeEventListener("focus", load);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [client, workspaceId]);
 }
 

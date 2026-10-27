@@ -96,10 +96,11 @@ export class ClaudeDeviceAccess {
   private capability?: {owner: string; expiresAt: number; models: string[]; catalog: ClaudeCatalogEntry[]; reason: string | null};
   constructor(private readonly request: ClaudeDeviceRequest, private readonly client: string) {}
 
-  async access(): Promise<ClaudeAccess> {
+  /** `fresh`: ask the server again now (a turn's start), not the answer of the last 30 s. */
+  async access(options: { fresh?: boolean } = {}): Promise<ClaudeAccess> {
     const account = await read(await this.request("device/me"));
     if (!record(account) || typeof account.id !== "string" || !account.id) throw new Error("Sign in to OmniRush to use Claude Code");
-    if (!this.capability || this.capability.owner !== account.id || Date.now() >= this.capability.expiresAt) {
+    if (options.fresh || !this.capability || this.capability.owner !== account.id || Date.now() >= this.capability.expiresAt) {
       let models: string[] = [], catalog: ClaudeCatalogEntry[] = [], reason: string | null = "unavailable";
       try {
         const value = await read(await this.request("collect/capabilities"));
@@ -114,11 +115,19 @@ export class ClaudeDeviceAccess {
           if (code.enabled === true && Array.isArray(code.models)) models = [...new Set(code.models.filter((model): model is string => typeof model === "string" && CLAUDE_MODEL_ID.test(model)))];
           if (code.enabled === true && !models.length) reason = "no_models";
         }
-      } catch { /* Failed eligibility checks deny new sessions, but never hide saved evidence. */ }
+      } catch {
+        // Failed eligibility checks deny new sessions, but never hide saved evidence. A fresh ask that failed keeps
+        // the account's last answer while it is still current.
+        if (this.capability?.owner === account.id && Date.now() < this.capability.expiresAt) return this.answer(account.id);
+      }
       this.capability = {owner: account.id, expiresAt: Date.now() + 30_000, models, catalog, reason: models.length ? null : reason};
     }
-    const {models, catalog, reason} = this.capability;
-    return { owner: account.id, capabilities: models.length ? ["claude-code"] : [], models, catalog, reason };
+    return this.answer(account.id);
+  }
+
+  private answer(owner: string): ClaudeAccess {
+    const {models, catalog, reason} = this.capability!;
+    return { owner, capabilities: models.length ? ["claude-code"] : [], models, catalog, reason };
   }
 
   async authorize(context: ClaudeAuthorization): Promise<ClaudeGrant> {
@@ -129,7 +138,17 @@ export class ClaudeDeviceAccess {
     const existing = this.pending.get(key); if (existing) return existing;
     const pending = this.mint(context, key);
     this.pending.set(key, pending);
-    try { return await pending; } finally { this.pending.delete(key); }
+    try { return await pending; } catch (error) {
+      // Access taken away: the next ask reads it again and the chat's other grants go.
+      if (error instanceof ClaudeAccessError && error.status === 403) this.forget(context.owner);
+      throw error;
+    } finally { this.pending.delete(key); }
+  }
+
+  /** Drops the cached access answer and an account's grants (a 403: its access changed). */
+  forget(owner?: string): void {
+    this.capability = undefined;
+    for (const key of this.grants.keys()) if (!owner || key.startsWith(`${owner}/`)) this.grants.delete(key);
   }
 
   private async mint(context: ClaudeAuthorization, key: string): Promise<ClaudeGrant> {
