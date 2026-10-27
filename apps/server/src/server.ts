@@ -309,6 +309,7 @@ async function capturePermissionMode(config: ServerConfig): Promise<ApprovalMode
 const autoCompactorsByServer = new WeakMap<ServerConfig, AutoCompactor>();
 /** How long a request waits for the 2.x engine while it starts (its boot timeout, managed-opencode-v2.ts). */
 const ENGINE_V2_START_WAIT_MS = 60_000;
+const BY_FOLDER_ENGINE_WAIT_MS = 30_000;
 const engineV2ByServer = new WeakMap<ServerConfig, EngineV2Preview>();
 const editorLspByServer = new WeakMap<ServerConfig, ReturnType<typeof createEditorLsp>>();
 function editorLspFor(config: ServerConfig): ReturnType<typeof createEditorLsp> {
@@ -5184,9 +5185,7 @@ function createRoutes(
     const requested = Number(ctx.url.searchParams.get("limit"));
     const limit = Number.isInteger(requested) && requested > 0 ? Math.min(requested, 500) : 200;
     if (ctx.url.searchParams.get("engine") === "v2") {
-      const v2 = engineV2ByServer.get(config)?.connection();
-      if (!v2) throw new ApiError(503, "opencode_unconfigured", "The engine is not running");
-      return jsonResponse(await listEngineV2SessionsInFolder(v2, directory, limit));
+      return jsonResponse(await listEngineV2FolderSessions(engineV2ByServer.get(config), directory, limit));
     }
     return jsonResponse(await listEngineSessionsInFolder(config, workspace, directory, limit));
   });
@@ -6667,6 +6666,19 @@ export async function listEngineSessionsInFolder(
  * direction, a trailing slash or the long-path prefix, or by real path
  * (symlink, junction, subst drive).
  */
+/** The by-folder list of the 2.x engine. At start the engine is still coming up: waited for (the app's call allows 45 s), a 503 only when it is not up by then. */
+export async function listEngineV2FolderSessions(
+  preview: Pick<EngineV2Preview, "awaitConnection"> | undefined,
+  directory: string,
+  limit: number,
+  waitMs = BY_FOLDER_ENGINE_WAIT_MS,
+  fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>,
+): Promise<unknown[]> {
+  const v2 = await preview?.awaitConnection(waitMs);
+  if (!v2) throw new ApiError(503, "opencode_unconfigured", "The engine is not running");
+  return listEngineV2SessionsInFolder(v2, directory, limit, fetchImpl);
+}
+
 export async function listEngineV2SessionsInFolder(
   v2: { url: string; password: string },
   directory: string,

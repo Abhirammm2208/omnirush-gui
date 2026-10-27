@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { isSameSessionFolder, listEngineSessionsInFolder, listEngineV2SessionsInFolder } from "./server.js";
+import { isSameSessionFolder, listEngineSessionsInFolder, listEngineV2FolderSessions, listEngineV2SessionsInFolder } from "./server.js";
+import { awaitEngineConnection } from "./engine-v2-preview.js";
 import type { ServerConfig, WorkspaceInfo } from "./types.js";
 
 describe("isSameSessionFolder", () => {
@@ -115,5 +116,18 @@ describe("listEngineV2SessionsInFolder", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("listEngineV2FolderSessions", () => {
+  test("at start it waits for the engine instead of answering 503; 503 only when the engine never comes up", async () => {
+    let up: { url: string; username: string; password: string } | undefined;
+    setTimeout(() => { up = { url: "http://engine.invalid", username: "opencode", password: "pw" }; }, 150);
+    const starting = { awaitConnection: (ms: number) => awaitEngineConnection({ connection: () => up, starting: () => undefined, failed: () => false }, ms, 20) };
+    const listed = await listEngineV2FolderSessions(starting, "/p", 10, 5_000, async () => Response.json({ data: [{ id: "ses_p", location: { directory: "/p" } }] }));
+    expect(listed.map((session) => (session as { id: string }).id)).toEqual(["ses_p"]);
+    const never = { awaitConnection: (ms: number) => awaitEngineConnection({ connection: (): { url: string; username: string; password: string } | undefined => undefined, starting: () => undefined, failed: () => false }, ms, 20) };
+    await expect(listEngineV2FolderSessions(never, "/p", 10, 100)).rejects.toMatchObject({ status: 503 });
+    await expect(listEngineV2FolderSessions(undefined, "/p", 10, 100)).rejects.toMatchObject({ status: 503 });
   });
 });
