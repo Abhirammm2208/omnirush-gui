@@ -13,6 +13,7 @@ import { managedDesktopPolicy } from "./managed-desktop-policy.js";
 import { mkdir } from "node:fs/promises";
 import { engineToolsRoot, setToolsRoot } from "./box/box.js";
 import { setWriteCheckEngine } from "./folder-write-check.js";
+import { applyStockSwitches } from "./stock-mode/stock-mode.mjs";
 import { resolveServerConfig, type CliArgs } from "./config.js";
 import {
   buildEngineAuthProbeHeader,
@@ -103,6 +104,8 @@ export type EmbeddedServerHandle = {
 };
 
 export async function startEmbeddedServer(options: EmbeddedServerOptions): Promise<EmbeddedServerHandle> {
+  // Stock mode (OMNIRUSH_FARM at launch): its switches for the whole app process, before anything reads them.
+  applyStockSwitches(process.env);
   const config = await resolveServerConfig(options);
   config.localManagedMcpVaultKey = options.localManagedMcpVaultKey;
   config.omnirushGatewayCredentials = options.omnirushGatewayCredentials;
