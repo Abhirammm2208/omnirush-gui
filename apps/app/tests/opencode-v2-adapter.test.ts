@@ -1954,3 +1954,51 @@ describe("OpenCode 2.0.32 workspace reads", () => {
     } finally { globalThis.fetch = originalFetch; }
   });
 });
+
+test("v2 models keep their efforts so the effort picker lists them", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    if (request.url.endsWith("/api/model")) return jsonResponse({ data: [
+      { id: "gpt-6-astra", providerID: "omnirush", name: "GPT 6 Astra", capabilities: { tools: true, input: ["text"], output: ["text"] },
+        variants: [{ id: "low", settings: { reasoningEffort: "low" } }, { id: "max", settings: { reasoningEffort: "max" } }] },
+      { id: "plain", providerID: "omnirush", name: "Plain" },
+    ] });
+    if (request.url.endsWith("/api/provider")) return jsonResponse({ data: [{ id: "omnirush", name: "OmniRush" }] });
+    if (request.url.endsWith("/api/model/default")) return jsonResponse({ data: {} });
+    throw new Error(`Unexpected request: ${request.url}`);
+  };
+  try {
+    const client = createClientV2("http://opencode.test/opencode2", "/workspace", {});
+    const models = (await client.provider.list()).data?.all[0]?.models ?? {};
+    expect(models["gpt-6-astra"]?.variants).toEqual({ low: { reasoningEffort: "low" }, max: { reasoningEffort: "max" } });
+    expect(models["gpt-6-astra"]?.capabilities.reasoning).toBe(true);
+    expect(models.plain?.variants).toBeUndefined();
+    expect(models.plain?.capabilities.reasoning).toBe(false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a send posts the picked effort with the session model", async () => {
+  const originalFetch = globalThis.fetch;
+  const bodies: unknown[] = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    if (request.url.endsWith("/model")) { bodies.push(await request.json()); return new Response(null, { status: 204 }); }
+    if (request.url.endsWith("/prompt")) return new Response(null, { status: 204 });
+    throw new Error(`Unexpected request: ${request.method} ${request.url}`);
+  };
+  try {
+    const client = createClientV2("http://opencode.test/opencode2", "/workspace", {});
+    const model = { providerID: "omnirush", modelID: "gpt-6-astra" };
+    await client.session.promptAsync({ sessionID: "ses_e", model, variant: "max", parts: [{ type: "text", text: "a" }] });
+    await client.session.promptAsync({ sessionID: "ses_e", model, parts: [{ type: "text", text: "b" }] });
+    expect(bodies).toEqual([
+      { model: { providerID: "omnirush", id: "gpt-6-astra", variant: "max" } },
+      { model: { providerID: "omnirush", id: "gpt-6-astra" } },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -587,6 +587,11 @@ function mapV2Model(value: unknown): Model | null {
   const outputCapabilities = stringArray(rawCapabilities?.output);
   const toolcall = rawCapabilities?.tools === true;
   const released = readNumber(rawTime, "released");
+  // 2.x lists a model's efforts as [{id, settings}]; the 1.x picker reads {id: settings}.
+  const variants = Object.fromEntries((Array.isArray(value.variants) ? value.variants : []).flatMap((variant) => {
+    const variantID = readString(variant, "id");
+    return variantID ? [[variantID, readRecord(variant, "settings") ?? {}]] : [];
+  }));
   return {
     id,
     providerID,
@@ -598,7 +603,7 @@ function mapV2Model(value: unknown): Model | null {
     name: readString(value, "name") ?? id,
     capabilities: {
       temperature: false,
-      reasoning: outputCapabilities.includes("reasoning"),
+      reasoning: Object.keys(variants).length > 0 || outputCapabilities.includes("reasoning"),
       attachment: inputCapabilities.some((kind) => kind !== "text"),
       toolcall,
       input: {
@@ -634,6 +639,7 @@ function mapV2Model(value: unknown): Model | null {
     options: {},
     headers: {},
     release_date: released === undefined ? "" : new Date(released).toISOString(),
+    ...(Object.keys(variants).length > 0 ? { variants } : {}),
   };
 }
 
@@ -1551,9 +1557,10 @@ export function createClientV2(
     return failedResult({ ...result, payload: { name: "InvalidV2SessionResponse" } });
   };
 
-  const selectModel = (sessionID: string, model: { providerID: string; modelID: string }, options?: RequestOptions) =>
+  // The picked effort rides on the model (2.x `model.variant`); without one the engine runs the model's default.
+  const selectModel = (sessionID: string, model: { providerID: string; modelID: string }, variant: string | undefined, options?: RequestOptions) =>
     request("POST", `/api/session/${encodeURIComponent(sessionID)}/model`,
-      { model: { providerID: model.providerID, id: model.modelID } }, options?.signal);
+      { model: { providerID: model.providerID, id: model.modelID, ...(variant ? { variant } : {}) } }, options?.signal);
 
   // 2.x mutations answer 204 or a non-session payload; v1 callers expect the session.
   const thenSession = async (result: TransportResult, sessionID: string, options?: RequestOptions) =>
@@ -1664,7 +1671,7 @@ export function createClientV2(
           response: new Response(null, { status: 400 }),
         };
       }
-      const modelResult = await selectModel(parameters.sessionID, parameters.model, options);
+      const modelResult = await selectModel(parameters.sessionID, parameters.model, parameters.variant, options);
       if (!modelResult.response.ok) return failedResult(modelResult);
       if (parameters.system !== undefined) {
         const instructions = await request("PUT",
@@ -1785,14 +1792,14 @@ export function createClientV2(
       return result.response.ok ? successfulResult(result, {}) : failedResult(result);
     },
     command: async (
-      parameters: SessionParameters & { command: string; arguments?: string; model?: string },
+      parameters: SessionParameters & { command: string; arguments?: string; model?: string; variant?: string },
       options?: RequestOptions,
     ): Promise<FieldsResult<Record<string, never>>> => {
       // v1 passes "provider/model"; 2.x commands run on the session model.
       const slash = parameters.model?.indexOf("/") ?? -1;
       if (parameters.model && slash > 0) {
         const modelResult = await selectModel(parameters.sessionID,
-          { providerID: parameters.model.slice(0, slash), modelID: parameters.model.slice(slash + 1) }, options);
+          { providerID: parameters.model.slice(0, slash), modelID: parameters.model.slice(slash + 1) }, parameters.variant, options);
         if (!modelResult.response.ok) return failedResult(modelResult);
       }
       const result = await request("POST", `/api/session/${encodeURIComponent(parameters.sessionID)}/command`,

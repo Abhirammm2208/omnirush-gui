@@ -33,6 +33,35 @@ export interface OpencodeV2ProviderSpec {
   models: OpencodeV2ModelSpec[];
 }
 
+/** One app model as the 2.x engine config entry. */
+export function v2ModelConfig(model: OpencodeV2ModelSpec): Record<string, unknown> {
+  const config = model.config ?? {};
+  const modalities = isRecord(config.modalities) ? config.modalities : {};
+  // The catalog's efforts (its enabled variants), as the CLI's engine-v2.js v2Model.
+  const efforts = isRecord(config.variants)
+    ? Object.entries(config.variants).filter(([, value]) => isRecord(value) && value.disabled !== true).map(([id]) => id)
+    : [];
+  return {
+    name: model.name,
+    ...(typeof config.id === "string" ? { modelID: config.id } : {}),
+    capabilities: {
+      tools: typeof config.tool_call === "boolean" ? config.tool_call : true,
+      input: modalities.input ?? ["text"],
+      output: modalities.output ?? ["text"],
+      ...(config.reasoning ? { reasoning: { supported: true, ...(efforts.length ? { effort: efforts } : {}) } } : {}),
+    },
+    // A mid-chat effort change goes as the request's own reasoning.effort (what the gateway meters), not only
+    // as a configuration_update item the engine would add for gpt-6+ ids while keeping the chat's first effort.
+    ...(config.reasoning ? { compatibility: { supportsEffortUpdates: false } } : {}),
+    // No catalog limit: the engine's own default, as stock (an output cap of 32000 tokens).
+    ...(isRecord(config.limit) ? { limit: config.limit } : {}),
+    ...(typeof config.family === "string" ? { family: config.family } : {}),
+    ...(isRecord(config.options) ? { settings: config.options } : {}),
+    ...(isRecord(config.headers) ? { headers: config.headers } : {}),
+    ...(config.status === "deprecated" ? { disabled: true } : {}),
+  };
+}
+
 export interface ManagedOpencodeV2ServerOptions {
   bin: string;
   rootDir: string;
@@ -274,23 +303,7 @@ export async function createManagedOpencodeV2Server(
       if (!providerAllowed(provider.id)) continue;
       const models: Record<string, unknown> = {};
       for (const model of provider.models) {
-        const config = model.config ?? {};
-        const modalities = isRecord(config.modalities) ? config.modalities : {};
-        models[model.id] = {
-          name: model.name,
-          ...(typeof config.id === "string" ? { modelID: config.id } : {}),
-          capabilities: {
-            tools: typeof config.tool_call === "boolean" ? config.tool_call : true,
-            input: modalities.input ?? ["text"],
-            output: modalities.output ?? ["text"],
-          },
-          // No catalog limit: the engine's own default, as stock (an output cap of 32000 tokens).
-          ...(isRecord(config.limit) ? { limit: config.limit } : {}),
-          ...(typeof config.family === "string" ? { family: config.family } : {}),
-          ...(isRecord(config.options) ? { settings: config.options } : {}),
-          ...(isRecord(config.headers) ? { headers: config.headers } : {}),
-          ...(config.status === "deprecated" ? { disabled: true } : {}),
-        };
+        models[model.id] = v2ModelConfig(model);
       }
       providerConfig[provider.id] = {
         name: provider.name,
