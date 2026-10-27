@@ -82,6 +82,51 @@ describe("strict switch unknown: a chat's uploads wait for an answer that ran to
     done();
   }, 20_000);
 
+  test("a first turn's retry right after a failed capabilities ask asks again and binds (not sent unbound)", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "strict-reask-"));
+    const order: string[] = [];
+    const binds: Array<Record<string, unknown>> = [];
+    let asks = 0;
+    let upstream = 0;
+    const broker = new OmniRushGatewayBroker({
+      credentials: { gatewayUrl: "https://gateway.example/omnirush/v1", accessToken: "access-token", refreshToken: "refresh-token" },
+      engineToken: "local-engine-token",
+      strictStateFile: path.join(dir, "strict-sessions.json"),
+      chatPin: () => ({ box: false, revision: null, capturePolicy: "client-v3" }),
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/omnirush/collect/capabilities") {
+          asks += 1;
+          order.push(`caps ${asks}`);
+          // Down for the start check and the first turn's ask; up when the retry comes 0.x s later.
+          return asks <= 2 ? Response.json({ detail: "unavailable" }, { status: 503 }) : Response.json({ strict_sessions: { mode: "enforce", bind: true } });
+        }
+        if (url.pathname === "/omnirush/device/session-binding") {
+          order.push("bind");
+          binds.push(JSON.parse(String(init?.body ?? "{}")));
+          return Response.json({ binding: { model: "gpt-6-astra" } });
+        }
+        upstream += 1;
+        order.push(`upstream ${upstream}`);
+        return upstream === 1
+          ? Response.json({ error: { type: "server_error", message: "upstream unavailable" } }, { status: 502, headers: { "x-should-retry": "false" } })
+          : sse("response.created", "response.completed");
+      },
+    });
+    try {
+      await broker.sessionUploadCapabilities().catch(() => null);
+      const first = await broker.handle(request("ses_reask"), "responses");
+      await first.text();
+      const retry = await broker.handle(request("ses_reask"), "responses");
+      expect(retry.status).toBe(200);
+      await retry.text();
+      expect(order).toEqual(["caps 1", "caps 2", "upstream 1", "caps 3", "bind", "upstream 2"]);
+      expect(binds[0]).toMatchObject({ session_id: "ses_reask", model: "gpt-6-astra", capture_policy: "client-v3" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   test("answerCompleted: a completed stream or a JSON body counts; an error or a missing end does not", () => {
     expect(answerCompleted('data: {"type":"response.completed"}\n', "text/event-stream")).toBe(true);
     expect(answerCompleted('data: {"type":"response.created"}\n', "text/event-stream")).toBe(false);

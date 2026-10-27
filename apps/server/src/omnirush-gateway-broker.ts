@@ -2227,7 +2227,7 @@ export class OmniRushGatewayBroker {
     if (fixed) return fixed;
     // The last capabilities answer's switch (this server's, kept on disk until it answers): a model request never waits for one.
     // The switch not known yet (capabilities failed, nothing kept): asked again, bounded, before this request.
-    if (this.strictUnknown()) await this.askStrictAgain();
+    if (this.strictUnknown()) await this.askStrictAgain(request.headers.get("x-omnirush-session-id"));
     const strict = this.currentStrict();
     const strictHeader = strict?.header ?? (this.strictUnknown() ? STRICT_SESSION_HEADER : null);
     const unbound = strict ? await this.strictBindRefusal(strict, request, path, body) : null;
@@ -2547,9 +2547,11 @@ export class OmniRushGatewayBroker {
   /**
    * Capabilities asked again past their failure cooldown (at most once per STRICT_ASK_MS, waited for at
    * most STRICT_ASK_WAIT_MS): a turn after a failed check binds explicitly as soon as the server answers.
+   * A chat not confirmed yet (its first turn, and that turn's retry right after a failed ask) always asks:
+   * sent on the unknown switch it would go out with no binding and no capture policy.
    */
-  private async askStrictAgain(): Promise<void> {
-    if (Date.now() - this.strictAskedAt < STRICT_ASK_MS) return;
+  private async askStrictAgain(session: string | null): Promise<void> {
+    if (Date.now() - this.strictAskedAt < STRICT_ASK_MS && (!session || this.bindsConfirmed.has(session))) return;
     this.strictAskedAt = Date.now();
     this.capabilityFailure = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
