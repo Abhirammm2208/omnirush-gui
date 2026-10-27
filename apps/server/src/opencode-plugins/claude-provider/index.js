@@ -25,6 +25,11 @@
 //
 // Stop arrives as the stream's cancel() (the engine passes no abortSignal):
 // an interrupt on Claude's stdin, then SIGINT, then SIGKILL.
+//
+// One Claude per chat: a title request is never a turn (the engine asks the chat's model for the title when the
+// title model fails), and LAUNCH ends any earlier Claude of the same chat still running in the box (a launch boxsh
+// runs again with `<runtime> exec` after boxd's connection failed, a stopped turn's leftover); the turn's first
+// message is a file in the run folder, so a launch run again reads it too.
 
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -78,14 +83,50 @@ export function hasTranscript(configDir, uuid) {
   } catch { return false; }
 }
 
-/** Claude Code's argv for a turn. */
-export function claudeArgs({ model, uuid, resume }) {
+/** Claude Code's argv for a turn (LAUNCH adds --resume or --session-id in the box). */
+export function claudeArgs({ model }) {
   return ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-    "--model", model, "--permission-mode", "bypassPermissions", resume ? "--resume" : "--session-id", uuid];
+    "--model", model, "--permission-mode", "bypassPermissions"];
+}
+
+/**
+ * The turn's command in the box: sh -c LAUNCH <claude> <run folder> <uuid> <claudeArgs...>.
+ * Ends any other Claude of this chat (with its process group, unless it is ours), resumes when
+ * Claude has the chat's transcript, then gives Claude turn-<uuid>.jsonl and the provider's stdin after it.
+ */
+export const LAUNCH = [
+  "bin=$0 run=$1 id=$2; shift 2",
+  "me=$(cut -d' ' -f5 /proc/$$/stat 2>/dev/null)",
+  'for c in $(grep -lsaF -- "$id" /proc/[0-9]*/cmdline); do',
+  '  p=${c%/cmdline}; n=${p#/proc/}; [ "$n" = "$$" ] && continue',
+  "  case \"$(tr '\\0' ' ' 2>/dev/null <\"$p/cmdline\")\" in",
+  "    *\"$bin \"*\" $id \"*) g=$(cut -d' ' -f5 \"$p/stat\" 2>/dev/null); [ -n \"$g\" ] && [ \"$g\" != \"$me\" ] && kill -KILL -- \"-$g\" 2>/dev/null; kill -KILL \"$n\" 2>/dev/null;;",
+  "  esac",
+  "done",
+  'if ls "$CLAUDE_CONFIG_DIR"/projects/*/"$id.jsonl" >/dev/null 2>&1; then set -- "$@" --resume "$id"; else set -- "$@" --session-id "$id"; fi',
+  'f="$run/turn-$id.jsonl"; i=0; while [ ! -s "$f" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done',
+  // The feeder ends with Claude: a Claude that exits early (an error) must not leave the turn waiting on stdin.
+  't=$(mktemp /tmp/omnirush-feed.XXXXXX)',
+  'sh -c \'echo $$ > "$1"; cat "$2"; exec cat\' feed "$t" "$f" | { "$bin" "$@"; c=$?; i=0; while [ ! -s "$t" ] && [ $i -lt 40 ]; do sleep 0.05; i=$((i+1)); done; kill "$(cat "$t")" 2>/dev/null; rm -f "$t"; exit $c; }',
+].join("\n");
+
+/**
+ * The install log's folder for this chat's commands, as the app's box plugin gives the engine's own shell calls:
+ * a desktop chat notes in the desktop's box folder (<boxHome>/desktop-projects.json `pkglog_dir`), a CLI chat in
+ * the engine's (OMNIRUSH_PKGLOG_DIR). Null when the install log is off.
+ */
+export function installLogDir(boxHome, client, env = process.env) {
+  if (boxHome && String(client).startsWith("gui/")) {
+    try {
+      const dir = JSON.parse(fs.readFileSync(path.join(boxHome, "desktop-projects.json"), "utf8"))?.pkglog_dir;
+      if (typeof dir === "string" && dir) return dir;
+    } catch { /* not listed */ }
+  }
+  return env.OMNIRUSH_PKGLOG_DIR || null;
 }
 
 /** The env Claude Code runs with in the box (passed by boxsh through OMNIRUSH_BOX_PASS_ENV). */
-export function claudeEnv({ model, baseUrl, sessionID, client }) {
+export function claudeEnv({ model, baseUrl, sessionID, client, pkglogDir = null }) {
   const env = {
     CLAUDE_CONFIG_DIR: `${BOX_RUN}/claude/config`,
     ANTHROPIC_BASE_URL: baseUrl,
@@ -97,6 +138,10 @@ export function claudeEnv({ model, baseUrl, sessionID, client }) {
     DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
     // The box is the boundary that makes running without asks acceptable (it runs as root in a container).
     IS_SANDBOX: "1",
+    // The install log: Claude's commands (its sub-agents' too) note installs where the app reads this chat's, and
+    // name the chat (the engine names no call of Claude's: the app matches them to the chat's turn).
+    OMNIRUSH_SESSION: sessionID,
+    ...(pkglogDir ? { OMNIRUSH_PKGLOG_DIR: pkglogDir } : {}),
   };
   return env;
 }
@@ -191,6 +236,9 @@ class ClaudeCodeModel {
     const sessionID = String(headers["x-session-id"] || headers["x-opencode-session-id"] || "");
     if (!sessionID) throw apiError("A Claude turn needs its chat.");
     if (headers["x-omnirush-side"] === "1") throw apiError("Side questions aren't available in Claude chats yet.");
+    // A title the title model could not make (refused, busy) is asked again on the chat's model: here that ran the
+    // first message as a second Claude turn next to the real one ("Session ID … is already in use", two agents).
+    if (headers["x-omnirush-title"] === "1" || headers["x-omnirush-agent"] === "title") throw apiError("A Claude chat's title comes from the title model.");
     const compaction = headers["x-omnirush-agent"] === "compaction";
     const { shell, boxHome, directory, client = "cli", note } = this.settings;
     // One desktop engine serves every project: the request names its folder.
@@ -214,11 +262,13 @@ class ClaudeCodeModel {
     writeToken(grant.token);
     fs.writeFileSync(path.join(configDir, "settings.json"), `${JSON.stringify({ apiKeyHelper: `cat ${BOX_RUN}/claude/token` })}\n`, { mode: 0o600 });
 
-    const passed = claudeEnv({ model: this.modelId, baseUrl: grant.baseUrl, sessionID, client: grant.client || client });
+    const passed = claudeEnv({ model: this.modelId, baseUrl: grant.baseUrl, sessionID, client: grant.client || client, pkglogDir: installLogDir(boxHome, client) });
     const env = { ...process.env, ...passed, OMNIRUSH_BOX_KEY: key, OMNIRUSH_BOX_HOME: boxHome, OMNIRUSH_BOX_PASS_ENV: Object.keys(passed).join(",") };
     try { await ensureClaude({ shell, env, cwd: root, home: boxHome, run }); } catch (error) { throw apiError(error?.message || "Claude Code could not be installed in the sandbox."); }
 
-    const child = spawn(shell, ["-c", 'exec "$0" "$@"', BOX_BIN, ...claudeArgs({ model: this.modelId, uuid, resume })], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const turnFile = path.join(run, `turn-${uuid}.jsonl`);
+    fs.writeFileSync(turnFile, `${JSON.stringify({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, session_id: uuid })}\n`, { mode: 0o600 });
+    const child = spawn(shell, ["-c", LAUNCH, BOX_BIN, `${BOX_RUN}/claude`, uuid, ...claudeArgs({ model: this.modelId })], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     const mapper = new ClaudeStreamMapper({ compaction });
     let stderr = "";
     let done = false;
@@ -228,7 +278,8 @@ class ClaudeCodeModel {
     const timers = [];
     const end = () => { done = true; clearInterval(refresh); for (const t of timers) clearTimeout(t); };
     child.stdin.on("error", () => undefined);
-    child.stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, session_id: uuid })}\n`);
+    // The box has read it once Claude answers; a launch boxsh runs again reads it too.
+    child.on("close", () => fs.rmSync(turnFile, { force: true }));
     const settings = this.settings;
     return {
       stream: new ReadableStream({
@@ -253,7 +304,10 @@ class ClaudeCodeModel {
             }
           });
           child.on("error", (error) => { if (done) return; send({ type: "error", error: apiError(`Claude Code could not start in the sandbox (${error.message}).`) }); end(); controller.close(); });
+          // The turn's native transcript goes up with the chat (best effort), a stopped turn's too once Claude has exited.
+          const ended = (ok) => void fetch(settings.grantURL, { method: "POST", headers: { "content-type": "application/json", "x-omnirush-usage-key": settings.grantKey || "" }, body: JSON.stringify({ op: "end", sessionID, uuid, ok }) }).catch(() => undefined);
           child.on("close", (code) => {
+            if (stopped) return ended(false);
             if (done) return;
             const tail = stderr.trim().split("\n").filter(Boolean).at(-1);
             const last = mapper.finish(`Claude Code stopped before the turn finished${tail ? `: ${tail.slice(0, 300)}` : ` (exit ${code})`}.`);
@@ -261,8 +315,7 @@ class ClaudeCodeModel {
             send(last);
             end();
             controller.close();
-            // The turn's native transcript goes up with the chat (best effort).
-            void fetch(settings.grantURL, { method: "POST", headers: { "content-type": "application/json", "x-omnirush-usage-key": settings.grantKey || "" }, body: JSON.stringify({ op: "end", sessionID, uuid, ok: last.type === "finish" }) }).catch(() => undefined);
+            ended(last.type === "finish");
           });
         },
         cancel() {
