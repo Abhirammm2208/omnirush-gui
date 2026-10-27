@@ -242,6 +242,8 @@ export async function detectBackend({ boxHome, env = process.env, platform = pro
   // Under required (only): the backends that lead then (macOS: OmniRush's VM).
   const first = REQUIRED_FIRST[platform] ?? [];
   if (required && wanted === "auto") order = [...first, ...order.filter((id) => !first.includes(id))];
+  // Otherwise they come last (macOS: the bundled VM when no container runtime works here).
+  else if (wanted === "auto") order = [...order, ...first.filter((id) => !order.includes(id))];
   // OMNIRUSH_BOX_RUNTIME (docker, podman or a path) keeps meaning "this container CLI".
   if (legacyRuntime) order = order.filter((id) => !["bwrap", "lima", "apple", "wslc", "wsl", "wsl-engine"].includes(id));
   // Under the required sandbox on macOS/Windows: the backends whose boxes get their own build
