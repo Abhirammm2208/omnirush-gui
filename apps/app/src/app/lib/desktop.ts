@@ -364,6 +364,7 @@ declare global {
         platform?: "darwin" | "linux" | "windows";
         version?: string;
         evalFatalBootstrapFailure?: string | null;
+        stockMode?: boolean;
       };
     };
   }

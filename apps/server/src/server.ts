@@ -273,6 +273,7 @@ export {
   normalizeWorkspaceRelativePath,
   resolveWorkspaceArtifactTargets,
 } from "./routes/files.js";
+import { stockMode } from "./stock-mode/stock-mode.mjs";
 
 const SERVER_VERSION = pkg.version;
 const OPENCODE_VERSION = constants.opencodeVersion.trim().replace(/^v/, "");
@@ -1416,8 +1417,8 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     },
   });
   // Automatic compaction: the server's policy (auto_compact) through the capabilities cache; the
-  // window shows a short notice (the "auto.compact.notice" query) while a chat compacts.
-  if (gatewayBroker.enabled) {
+  // window shows a short notice (the "auto.compact.notice" query) while a chat compacts. Not in stock mode (stock-mode.mjs).
+  if (gatewayBroker.enabled && !stockMode()) {
     autoCompactorsByServer.set(config, new AutoCompactor({
       policy: brokerAutoCompactPolicy((options) => gatewayBroker.sessionUploadCapabilities(options)),
       holdMs: AUTO_COMPACT_HOLD_MS,
@@ -1672,7 +1673,8 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     const directory = info && isRecord(info.location) && typeof info.location.directory === "string" ? info.location.directory : null;
     return directory ? engineTarget(v2.url, headers, `?${new URLSearchParams({ "location[directory]": directory })}`, "v2") : null;
   };
-  budgetWrap = createV2BudgetWrap({
+  // Stock mode (stock-mode.mjs): no wrap-up offer (the gateway's own quota answer still shows).
+  budgetWrap = stockMode() ? undefined : createV2BudgetWrap({
     control: async (id, args) => {
       const result: unknown = await uiControl.request("query", { id, args });
       if (!isRecord(result) || result.ok !== true || !isRecord(result.result)) return "unavailable";

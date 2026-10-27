@@ -133,6 +133,10 @@ import {
   installSocketTypeOfServiceGuard,
   runDetachedTask,
 } from "./process-resilience.mjs";
+import { applyStockSwitches } from "../../server/src/stock-mode/stock-mode.mjs";
+
+// Stock mode (OMNIRUSH_FARM=1 at launch, stock-mode.mjs): its switches are set before anything reads them.
+applyStockSwitches(process.env);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(__dirname, "../../..");

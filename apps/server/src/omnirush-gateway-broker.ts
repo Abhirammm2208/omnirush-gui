@@ -18,6 +18,7 @@ import { gatewayUrlAllowed, RELEASE_GATEWAY_ERROR } from "./release-guard.js";
 import { BOX_HEADER, MODEL_NOT_IN_MODE, notInModeMessage, projectMode } from "./model-modes/model-modes.mjs";
 import { MODE_NOT_BOUND, MODEL_NOT_BOUND, REFUSED_HEADER, SESSION_BIND_UNCONFIRMED, STRICT_SESSION_HEADER, SESSION_BINDING_CONFLICT, SESSION_MODEL_USED, VERIFICATION_REQUIRED, sessionBinder, strictSessions, type StrictSessions } from "./model-modes/strict-sessions.mjs";
 import { ClaudeDeviceAccess, type ClaudeAuthorization, type ClaudeDeviceRequest } from "./claude-code/access.js";
+import { stockMode } from "./stock-mode/stock-mode.mjs";
 
 /** A main chat's request on another model than the one it started on (one model per chat). */
 const SESSION_MODEL_FIXED = "session_model_fixed";
@@ -2212,7 +2213,9 @@ export class OmniRushGatewayBroker {
     accessToken: string | undefined,
     requestId: string,
   ): Promise<Response> {
-    body = this.titleOnChatModel(request, path, body);
+    // Stock mode (stock-mode.mjs): the engine's request bodies go out as the engine wrote them (auth and routing only).
+    const stock = stockMode();
+    if (!stock) body = this.titleOnChatModel(request, path, body);
     // A model the chat's mode does not allow: refused here as the gateway would, never sent.
     if (this.modelInMode && body !== undefined && (path === "responses" || path === "responses/compact")) {
       const model = requestedModel(body);
@@ -2238,7 +2241,7 @@ export class OmniRushGatewayBroker {
       : null;
     if (unknownSession && !this.bindsConfirmed.has(unknownSession)) this.uploadHold(unknownSession, "pending");
     const confirmed = (response: Response) => (unknownSession ? this.confirmOnCompletion(response, unknownSession) : response);
-    const forwardedBody = path === "responses" && body !== undefined
+    const forwardedBody = !stock && path === "responses" && body !== undefined
       ? await withReasoningSummary(body, this.reasoningSummaryFor)
       : body;
     let failure: ReturnType<typeof fetchFailure> | null = null;

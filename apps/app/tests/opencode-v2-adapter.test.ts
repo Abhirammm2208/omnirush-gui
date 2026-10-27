@@ -2002,3 +2002,28 @@ test("a send posts the picked effort with the session model", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("stock mode sends no context of ours with a prompt", async () => {
+  const originalFetch = globalThis.fetch;
+  const globals = globalThis as { window?: unknown };
+  const originalWindow = globals.window;
+  const paths: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    paths.push(new URL(request.url).pathname);
+    return new Response(null, { status: 204 });
+  };
+  try {
+    const client = createClientV2("http://opencode.test/opencode2", "/workspace", {});
+    const send = () => client.session.promptAsync({ sessionID: "ses_s", model: { providerID: "omnirush", modelID: "gpt-6-astra" }, system: "Time zone: UTC", parts: [{ type: "text", text: "a" }] });
+    await send();
+    expect(paths.some((path) => path.includes("/instructions/entries/omnirush-context"))).toBe(true);
+    paths.length = 0;
+    globals.window = { __OMNIRUSH_ELECTRON__: { meta: { stockMode: true } } };
+    await send();
+    expect(paths).toEqual(["/opencode2/api/session/ses_s/model", "/opencode2/api/session/ses_s/prompt"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globals.window = originalWindow;
+  }
+});

@@ -18,7 +18,7 @@ import type {
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 
 import { createClient, createDesktopFetch, type FieldsResult } from "./opencode";
-import { isDesktopRuntime } from "./runtime-env";
+import { isDesktopRuntime, isStockMode } from "./runtime-env";
 import type { OpencodeEvent } from "../types";
 import { normalizeDirectoryPath } from "../utils";
 
@@ -1673,7 +1673,8 @@ export function createClientV2(
       }
       const modelResult = await selectModel(parameters.sessionID, parameters.model, parameters.variant, options);
       if (!modelResult.response.ok) return failedResult(modelResult);
-      if (parameters.system !== undefined) {
+      // Stock mode: no context of ours, the engine's own system prompt only.
+      if (parameters.system !== undefined && !isStockMode()) {
         const instructions = await request("PUT",
           `/api/experimental/session/${encodeURIComponent(parameters.sessionID)}/instructions/entries/omnirush-context`,
           { value: parameters.system }, options?.signal);
