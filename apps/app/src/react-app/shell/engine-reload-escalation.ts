@@ -58,7 +58,7 @@ export type ReloadEngineFallbackOptions = {
  * (it reports `restartDeferred`), so this never ends live runs by itself.
  */
 export async function reloadEngineWithDesktopFallback(
-  client: Pick<OmniRushServerClient, "reloadEngine">,
+  client: Pick<OmniRushServerClient, "reloadEngine"> & Partial<Pick<OmniRushServerClient, "getEngineV2PreviewStatus">>,
   workspaceId: string,
   options?: ReloadEngineFallbackOptions,
 ): Promise<ReloadEngineFallbackResult> {
@@ -72,6 +72,12 @@ export async function reloadEngineWithDesktopFallback(
     if (isTransientTransportError(error)) throw error;
     if (!canRestartDesktopForReloadError(error) || !isDesktop()) {
       throw error;
+    }
+    // Chats run on the 2.x engine: the 1.x one this reload targets is not there
+    // ("unconfigured"), so there is nothing to reload and nothing to restart.
+    if (error instanceof OmniRushServerError && error.code === "opencode_unconfigured") {
+      const v2 = await client.getEngineV2PreviewStatus?.().catch(() => null);
+      if (v2?.enabled && v2.chatRouting) return { restartedEngine: false };
     }
     await delay(options?.retryDelayMs ?? UNREACHABLE_RETRY_DELAY_MS);
     try {

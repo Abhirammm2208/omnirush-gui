@@ -85,6 +85,17 @@ describe("reloadEngineWithDesktopFallback", () => {
     expect(harness.restartCalls).toBe(1);
   });
 
+  test("chats on the 2.x engine: an unconfigured 1.x reload is nothing to reload, never a restart", async () => {
+    const harness = makeHarness([unconfiguredError(), unconfiguredError()]);
+    const client = { ...harness.client, getEngineV2PreviewStatus: async () => ({
+      enabled: true, running: true, chatRouting: true, mirroredProviderIds: [], skippedProviderIds: [], catalogModelIds: [],
+    }) };
+    const result = await reloadEngineWithDesktopFallback(client, "ws", harness.options);
+    expect(result.restartedEngine).toBe(false);
+    expect(harness.reloadCalls).toBe(1);
+    expect(harness.restartCalls).toBe(0);
+  });
+
   test("a restart the desktop deferred because sessions are running is not reported as a restart", async () => {
     const harness = makeHarness([unreachableError(), unreachableError()]);
     const result = await reloadEngineWithDesktopFallback(harness.client, "ws", {
