@@ -9,7 +9,10 @@ export const STOCK_NOTICE = "Stock mode: stock OpenCode v2 on GPT 6 Astra. No Om
 /** Stock mode (OMNIRUSH_FARM=1 at launch): one short notice when the window opens. */
 export function StockModeNotice() {
   useEffect(() => {
-    if (isStockMode()) toast.info(STOCK_NOTICE, { duration: 15_000 });
+    if (!isStockMode()) return;
+    // After this commit: the Toaster (providers.tsx, a later sibling) subscribes in its own effect.
+    const timer = setTimeout(() => toast.info(STOCK_NOTICE, { duration: 15_000 }), 500);
+    return () => clearTimeout(timer);
   }, []);
   return null;
 }
