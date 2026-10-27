@@ -325,6 +325,8 @@ contextBridge.exposeInMainWorld("__OMNIRUSH_ELECTRON__", {
     platform: normalizePlatform(process.platform),
     version: process.versions.electron,
     evalFatalBootstrapFailure: process.env.OMNIRUSH_EVAL_FATAL_DESKTOP_BOOTSTRAP_FAILURE ?? null,
+    // Stock mode (OMNIRUSH_FARM at launch; the same test as the server's stock-mode.mjs stockMode).
+    stockMode: ["1", "true", "on", "yes"].includes(String(process.env.OMNIRUSH_FARM ?? "").trim().toLowerCase()),
   },
 });
 

@@ -31,6 +31,7 @@ import { engineV2Root, importMissingV1Chats, readMigratedSessions, seedV2StoreFr
 import type { ServerConfig } from "./types.js";
 import { boxServiceFor } from "./box/desktop.js";
 import { omnirushBoxNextPluginPath } from "./omnirush-extensions-plugin-path.js";
+import { stockMode, stockProviders } from "./stock-mode/stock-mode.mjs";
 
 const PREVIEW_STATE_FILE = "engine-v2-preview.json";
 const UNSET_API_KEY = "omnirush-engine-v2-preview-unset";
@@ -460,8 +461,10 @@ export function createEngineV2Preview(options: {
     }
     const mapped = mapRuntimeProvidersToV2Specs(providerMap, credentials);
     // Claude Code under the engine: its own spec (an `aisdk:file://` package the mapping above never takes).
-    const claude = await options.claude?.().catch(() => null);
+    const claude = stockMode() ? null : await options.claude?.().catch(() => null);
     if (claude) mapped.specs.push(claude);
+    // Stock mode (stock-mode.mjs): the gateway's GPT 6 Astra only, so the engine is not waited on for the rest.
+    if (stockMode()) mapped.specs = stockProviders(mapped.specs);
     const nextMirroredProviderIds = mapped.specs.map((spec) => spec.id);
     await active.setProviders(mapped.specs);
     mirroredSpecs = mapped.specs;
@@ -553,7 +556,8 @@ export function createEngineV2Preview(options: {
       // The Linux sandbox (box/): the shell and box plugin follow BoxService.engineBits on every config write.
       box: async () => v2BoxBits(await boxServiceFor(config).engineBits()),
       titleModel: () => omnirushTitleModel(config),
-      mcpGate: v2McpGate(runtimeStorageDir(config), { ...process.env, ...computerUseEngineEnv(runtimeStorageDir(config)) }, Boolean(await cloudConnector())),
+      // Stock mode (stock-mode.mjs): no MCP server, the app's included.
+      mcpGate: stockMode() ? [] : v2McpGate(runtimeStorageDir(config), { ...process.env, ...computerUseEngineEnv(runtimeStorageDir(config)) }, Boolean(await cloudConnector())),
     });
     sidecar = managed;
     if (!enabled || !allowRunning) {

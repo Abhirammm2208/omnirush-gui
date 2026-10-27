@@ -11,6 +11,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { t } from "@/i18n";
 import {
@@ -151,7 +152,8 @@ export function NotificationBell({ variant = "icon" }: { variant?: "icon" | "sid
 
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
-      <PopoverTrigger
+      <Tooltip>
+      <TooltipTrigger render={<PopoverTrigger
         render={
           <Button
             variant="ghost"
@@ -159,8 +161,8 @@ export function NotificationBell({ variant = "icon" }: { variant?: "icon" | "sid
             className={variant === "sidebar-icon"
               ? "relative size-7 rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground"
               : "rounded-xl text-gray-10 transition-colors hover:bg-muted hover:text-foreground"}
-            title={t("notifications.title")}
             aria-label={label}
+            data-testid="notification-bell"
           >
             <Bell size={variant === "sidebar-icon" ? 16 : 17} />
             {unreadCount > 0 ? (
@@ -170,7 +172,9 @@ export function NotificationBell({ variant = "icon" }: { variant?: "icon" | "sid
             ) : null}
           </Button>
         }
-      />
+      />} />
+      <TooltipContent side="bottom">{label}</TooltipContent>
+      </Tooltip>
       <PopoverContent
         align={variant === "icon" ? "end" : "start"}
         side={variant === "icon" ? "bottom" : "right"}

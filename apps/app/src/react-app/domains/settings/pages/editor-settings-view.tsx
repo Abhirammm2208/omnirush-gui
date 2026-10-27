@@ -6,6 +6,7 @@ import type { OmniRushServerClient } from "@/app/lib/omnirush-server";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useEditorStore } from "../../session/editor/editor-store";
@@ -33,6 +34,7 @@ import { t } from "@/i18n";
 const SEGMENT =
   "h-7 rounded-md border border-transparent px-3 text-sm text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring aria-checked:border-foreground/70 aria-checked:bg-background aria-checked:font-medium aria-checked:text-foreground aria-checked:shadow-xs";
 const GROUP = "flex w-fit gap-0.5 rounded-lg border border-border bg-muted/40 p-0.5";
+const fontSizeItems = EDITOR_FONT_SIZES.map((size) => ({ value: String(size), label: `${size} px` }));
 
 /** A row of choices that is a real radio group: one tab stop, arrow keys (and Home/End) change the choice. */
 function SegmentedRadio<T extends string>(props: { label: string; value: T; options: Array<{ value: T; label: string }>; onChange: (value: T) => void }) {
@@ -143,15 +145,16 @@ export function EditorSettingsView(props: { client: OmniRushServerClient | null;
             </LayoutSectionItemTitle>
             <LayoutSectionItemDescription>{t("settings.editor.font_size_desc")}</LayoutSectionItemDescription>
             <LayoutSectionItemHeaderActions>
-              <select
-                id="editor-font-size"
-                value={settings.fontSize}
-                onChange={(event) => set("fontSize", Number(event.target.value))}
-                className="h-8 rounded-md border border-border bg-background px-2 text-sm"
-                data-editor-setting="fontSize"
-              >
-                {EDITOR_FONT_SIZES.map((size) => <option key={size} value={size}>{size} px</option>)}
-              </select>
+              <Select value={String(settings.fontSize)} items={fontSizeItems} onValueChange={(value) => value && set("fontSize", Number(value))}>
+                <SelectTrigger id="editor-font-size" className="w-28" data-editor-setting="fontSize">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {fontSizeItems.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
             </LayoutSectionItemHeaderActions>
           </LayoutSectionItemHeader>
         </LayoutSectionItem>

@@ -83,7 +83,7 @@ describe("lima: the probe and the order", () => {
     expect((await probeLima({ platform: "darwin", release: "25.0.0", env: { OMNIRUSH_BOX_LIMACTL: bin }, home, run: limaRun(state), now: Date.now() + 2 * 3_600_000 })).ok).toBe(true);
   });
 
-  test("macOS order: under required the OmniRush VM first, even with OrbStack running; without required the order before the VM", async () => {
+  test("macOS order: under required the OmniRush VM first, even with OrbStack running; without required the VM after every container runtime, so a Mac with none still gets the VM", async () => {
     const docker = "/usr/local/bin/docker";
     const run: RunCommand = async (_bin, args) => {
       if (args[0] === "context") return ok(JSON.stringify({ Name: "orbstack", DockerEndpoint: "unix:///x/orb.sock" }));
@@ -96,14 +96,16 @@ describe("lima: the probe and the order", () => {
     expect(vm.alternatives?.some((a) => a.backend === "orbstack" && a.ok)).toBe(true);
     const old = await detectBackend({ ...base, boxHome: tmp(), release: "21.0.0", env: { PATH: "/usr/local/bin" }, required: true });
     expect(old.ok && old.backend).toBe("orbstack");
-    // Not required: the order is the one before the VM (it runs only when chosen by name).
+    // Not required: a container runtime that works comes first; the VM is the last resort.
     const plain = await detectBackend({ ...base, boxHome: tmp(), env: { PATH: "/usr/local/bin" }, all: true });
     expect(plain.ok && plain.backend).toBe("orbstack");
-    expect(plain.ok && plain.why).toBe("the first that works here, in order: orbstack > colima > docker-desktop > rancher > podman > docker");
-    expect(plain.alternatives?.find((a) => a.backend === "lima")?.reason).toMatch(/used when the sandbox is required/);
+    expect(plain.ok && plain.why).toBe("the first that works here, in order: orbstack > colima > docker-desktop > rancher > podman > docker > lima");
+    expect(plain.alternatives?.some((a) => a.backend === "lima")).toBe(true);
+    // No container runtime at all: the bundled VM (it sets itself up), as under required.
     const none = await detectBackend({ ...base, boxHome: tmp(), env: { PATH: "/usr/bin" }, exists: () => false });
-    expect(none.ok).toBe(false);
-    expect(none.ok ? "" : none.reason).not.toMatch(/OmniRush VM/);
+    expect(none.ok && none.backend).toBe("lima");
+    const vmOff = await detectBackend({ ...base, boxHome: tmp(), env: { PATH: "/usr/bin", OMNIRUSH_BOX_LIMA: "0" }, exists: () => false });
+    expect(vmOff.ok).toBe(false);
     const chosen = await detectBackend({ ...base, boxHome: tmp(), env: { PATH: "/usr/local/bin" }, asked: "lima" });
     expect(chosen.ok && chosen.backend).toBe("lima");
     expect(normalizeBackend("omnirush-vm")).toBe("lima");

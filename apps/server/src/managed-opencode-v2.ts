@@ -14,6 +14,7 @@ import { writeFileAtomic } from "./atomic-write.js";
 import { currentProviderLockPolicy, noteEngineStarted, providerAllowed } from "./provider-lock.js";
 import { APP_PROVIDER_IDS, providerLockEnv } from "./provider-lock/provider-lock.mjs";
 import { gateEnv } from "./engine-gates/engine-gates.mjs";
+import { STOCK_ENV, STOCK_PROVIDER, stockMode, stockProviders } from "./stock-mode/stock-mode.mjs";
 import { releaseEngineBinary } from "./release-guard.js";
 
 export interface OpencodeV2ModelSpec {
@@ -31,6 +32,35 @@ export interface OpencodeV2ProviderSpec {
   headers?: Record<string, unknown>;
   apiKey: string;
   models: OpencodeV2ModelSpec[];
+}
+
+/** One app model as the 2.x engine config entry. */
+export function v2ModelConfig(model: OpencodeV2ModelSpec): Record<string, unknown> {
+  const config = model.config ?? {};
+  const modalities = isRecord(config.modalities) ? config.modalities : {};
+  // The catalog's efforts (its enabled variants), as the CLI's engine-v2.js v2Model.
+  const efforts = isRecord(config.variants)
+    ? Object.entries(config.variants).filter(([, value]) => isRecord(value) && value.disabled !== true).map(([id]) => id)
+    : [];
+  return {
+    name: model.name,
+    ...(typeof config.id === "string" ? { modelID: config.id } : {}),
+    capabilities: {
+      tools: typeof config.tool_call === "boolean" ? config.tool_call : true,
+      input: modalities.input ?? ["text"],
+      output: modalities.output ?? ["text"],
+      ...(config.reasoning ? { reasoning: { supported: true, ...(efforts.length ? { effort: efforts } : {}) } } : {}),
+    },
+    // A mid-chat effort change goes as the request's own reasoning.effort (what the gateway meters), not only
+    // as a configuration_update item the engine would add for gpt-6+ ids while keeping the chat's first effort.
+    ...(config.reasoning ? { compatibility: { supportsEffortUpdates: false } } : {}),
+    // No catalog limit: the engine's own default, as stock (an output cap of 32000 tokens).
+    ...(isRecord(config.limit) ? { limit: config.limit } : {}),
+    ...(typeof config.family === "string" ? { family: config.family } : {}),
+    ...(isRecord(config.options) ? { settings: config.options } : {}),
+    ...(isRecord(config.headers) ? { headers: config.headers } : {}),
+    ...(config.status === "deprecated" ? { disabled: true } : {}),
+  };
 }
 
 export interface ManagedOpencodeV2ServerOptions {
@@ -126,7 +156,9 @@ const CLAUDE_PROVIDER_ID = "omnirush-claude";
 
 export function engineV2SpawnEnv(env: Record<string, string>, mcp: readonly string[] = []): Record<string, string> {
   // Both app providers pass the gate (a comma list): the gateway's and Claude Code in the box (opencode-plugins/claude-provider).
-  return assertEngineGates({ ...env, ...gateEnv({ provider: GATEWAY_PROVIDER_ID, mcp }), OMNIRUSH_GATE_PROVIDERS: APP_PROVIDER_IDS.join(",") });
+  // Stock mode (stock-mode.mjs): the gateway's only, and no MCP server.
+  const stock = stockMode(env);
+  return assertEngineGates({ ...env, ...gateEnv({ provider: GATEWAY_PROVIDER_ID, mcp: stock ? [] : mcp }), OMNIRUSH_GATE_PROVIDERS: stock ? STOCK_PROVIDER : APP_PROVIDER_IDS.join(",") });
 }
 
 export function assertEngineGates(env: Record<string, string | undefined>): Record<string, string> {
@@ -162,7 +194,7 @@ export async function createManagedOpencodeV2Server(
     "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "CI",
     "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
     "SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
-    "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", STOCK_ENV,
   ]) {
     const value = options.env?.[key] ?? process.env[key];
     if (value !== undefined) inherited[key] = value;
@@ -269,28 +301,13 @@ export async function createManagedOpencodeV2Server(
 
   async function writeProviders(): Promise<void> {
     const providerConfig: Record<string, unknown> = {};
-    for (const provider of providers.values()) {
+    const stock = stockMode(process.env);
+    for (const provider of stock ? stockProviders([...providers.values()]) : providers.values()) {
       // Only the providers the lock allows (provider-lock.ts) reach the v2 engine.
       if (!providerAllowed(provider.id)) continue;
       const models: Record<string, unknown> = {};
       for (const model of provider.models) {
-        const config = model.config ?? {};
-        const modalities = isRecord(config.modalities) ? config.modalities : {};
-        models[model.id] = {
-          name: model.name,
-          ...(typeof config.id === "string" ? { modelID: config.id } : {}),
-          capabilities: {
-            tools: typeof config.tool_call === "boolean" ? config.tool_call : true,
-            input: modalities.input ?? ["text"],
-            output: modalities.output ?? ["text"],
-          },
-          // No catalog limit: the engine's own default, as stock (an output cap of 32000 tokens).
-          ...(isRecord(config.limit) ? { limit: config.limit } : {}),
-          ...(typeof config.family === "string" ? { family: config.family } : {}),
-          ...(isRecord(config.options) ? { settings: config.options } : {}),
-          ...(isRecord(config.headers) ? { headers: config.headers } : {}),
-          ...(config.status === "deprecated" ? { disabled: true } : {}),
-        };
+        models[model.id] = v2ModelConfig(model);
       }
       providerConfig[provider.id] = {
         name: provider.name,
@@ -327,7 +344,7 @@ export async function createManagedOpencodeV2Server(
       // On: the stock websearch tool searches through Exa (the engine's keyless default), like the CLI.
       // Off: no provider is picked (never `false`, which would take the tool out of the stock list).
       // shortcut: Exa until the gateway serves a search integration of its own.
-      ...(options.webSearch?.() ? { websearch: { provider: "exa" } } : {}),
+      ...(!stock && options.webSearch?.() ? { websearch: { provider: "exa" } } : {}),
       ...(box ? { shell: box.shell } : {}),
       plugins: await pluginDirectories(join(options.rootDir, "plugins"), [sessionNextPluginPath(), ...(options.env?.OMNIRUSH_SERVER_URL ? [managedPolicyPluginPath(true)] : []), ...(box ? [box.plugin] : [])]),
     }, null, 2)}\n`, (file, text) => writeFileAtomic(file, text, { mode: 0o600 }));

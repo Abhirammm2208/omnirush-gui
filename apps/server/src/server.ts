@@ -273,6 +273,7 @@ export {
   normalizeWorkspaceRelativePath,
   resolveWorkspaceArtifactTargets,
 } from "./routes/files.js";
+import { stockMode } from "./stock-mode/stock-mode.mjs";
 
 const SERVER_VERSION = pkg.version;
 const OPENCODE_VERSION = constants.opencodeVersion.trim().replace(/^v/, "");
@@ -1417,8 +1418,8 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     },
   });
   // Automatic compaction: the server's policy (auto_compact) through the capabilities cache; the
-  // window shows a short notice (the "auto.compact.notice" query) while a chat compacts.
-  if (gatewayBroker.enabled) {
+  // window shows a short notice (the "auto.compact.notice" query) while a chat compacts. Not in stock mode (stock-mode.mjs).
+  if (gatewayBroker.enabled && !stockMode()) {
     autoCompactorsByServer.set(config, new AutoCompactor({
       policy: brokerAutoCompactPolicy((options) => gatewayBroker.sessionUploadCapabilities(options)),
       holdMs: AUTO_COMPACT_HOLD_MS,
@@ -1619,7 +1620,8 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
   // Claude chats (claude-code/chat.ts): the engine's Claude provider asks /omnirush-claude/turn, with this key, for each turn.
   const claudeKey = randomBytes(24).toString("base64url");
   const claudeTurn = claudeChatRoute({
-    access: () => gatewayBroker.claudeAccess(),
+    // Asked fresh at each turn: access taken away refuses at once (not after the relay's 403s), a grant needs no restart.
+    access: () => gatewayBroker.claudeAccess({ fresh: true }),
     authorize: (context) => gatewayBroker.claudeGrant(context),
     pin: (sessionId) => gatewayBroker.chatModel(sessionId),
     setPin: (sessionId, model) => gatewayBroker.pinChatModel(sessionId, model),
@@ -1673,7 +1675,8 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
     const directory = info && isRecord(info.location) && typeof info.location.directory === "string" ? info.location.directory : null;
     return directory ? engineTarget(v2.url, headers, `?${new URLSearchParams({ "location[directory]": directory })}`, "v2") : null;
   };
-  budgetWrap = createV2BudgetWrap({
+  // Stock mode (stock-mode.mjs): no wrap-up offer (the gateway's own quota answer still shows).
+  budgetWrap = stockMode() ? undefined : createV2BudgetWrap({
     control: async (id, args) => {
       const result: unknown = await uiControl.request("query", { id, args });
       if (!isRecord(result) || result.ok !== true || !isRecord(result.result)) return "unavailable";
@@ -2197,6 +2200,25 @@ function stoppedSendResponse(config: ServerConfig, sessionId: string | null | un
   return jsonResponse({ code: "send_stopped", message: "The send was stopped before it reached the engine." }, 409);
 }
 
+/**
+ * A 2.x model as the window may see it: model overrides and variants can carry credentials too, so only the metadata
+ * needed for selection, and the variants' names (the effort picker), never their settings.
+ */
+export function publicV2Model(value: unknown): Record<string, unknown> | null {
+  if (value === null) return null;
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.providerID !== "string") {
+    throw new ApiError(502, "invalid_engine_response", "Invalid model metadata");
+  }
+  const picked = Object.fromEntries(Object.entries(value).filter(([key]) => [
+    "id", "modelID", "providerID", "canonical", "family", "name", "package",
+    "capabilities", "time", "cost", "status", "enabled", "limit",
+  ].includes(key)));
+  const variants = Array.isArray(value.variants)
+    ? value.variants.flatMap((variant) => (isRecord(variant) && typeof variant.id === "string" ? [{ id: variant.id }] : []))
+    : [];
+  return variants.length ? { ...picked, variants } : picked;
+}
+
 export async function proxyOpencodeV2Request(input: {
   config: ServerConfig;
   request: Request;
@@ -2309,7 +2331,8 @@ export async function proxyOpencodeV2Request(input: {
     throw new ApiError(403, "engine_instructions_managed", "OmniRush.ai instructions are managed by the server");
   }
 
-  if (method === "POST" && sessionId && /^\/api\/session\/[^/]+\/(?:prompt|command|generate)$/.test(routePath)) {
+  // Stock mode (stock-mode.mjs): the engine's own system prompt only, no OmniRush guidance.
+  if (method === "POST" && sessionId && !stockMode() && /^\/api\/session\/[^/]+\/(?:prompt|command|generate)$/.test(routePath)) {
     // Session ownership was verified above. Replace one native instruction
     // entry immediately before admission; never append to conversation text.
     const internalHeaders = new Headers({ authorization: headers.get("authorization") ?? "", "content-type": "application/json" });
@@ -2495,21 +2518,10 @@ export async function proxyOpencodeV2Request(input: {
     return jsonResponse({ data });
   }
   if (method === "GET" && /^\/api\/model(?:\/|$)/.test(decodedPath) && response.ok) {
-    // Model overrides and variants can carry credentials too. Keep only the
-    // metadata needed for selection; request settings remain inside the engine.
+    // Only what selection needs (publicV2Model); request settings remain inside the engine.
     const payload: unknown = await response.json();
     const raw = isRecord(payload) && "data" in payload ? payload.data : payload;
-    const publicModel = (value: unknown) => {
-      if (value === null) return null;
-      if (!isRecord(value) || typeof value.id !== "string" || typeof value.providerID !== "string") {
-        throw new ApiError(502, "invalid_engine_response", "Invalid model metadata");
-      }
-      return Object.fromEntries(Object.entries(value).filter(([key]) => [
-        "id", "modelID", "providerID", "canonical", "family", "name", "package",
-        "capabilities", "time", "cost", "status", "enabled", "limit",
-      ].includes(key)));
-    };
-    return jsonResponse({ data: Array.isArray(raw) ? raw.map(publicModel) : publicModel(raw) });
+    return jsonResponse({ data: Array.isArray(raw) ? raw.map(publicV2Model) : publicV2Model(raw) });
   }
   if (method === "GET" && /^\/api\/event\/*$/.test(decodedPath) && response.ok && response.body) {
     const expected = await realpath(input.workspace.path);

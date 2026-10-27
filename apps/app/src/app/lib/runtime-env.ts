@@ -8,3 +8,8 @@ export function isElectronRuntime() {
 export function isDesktopRuntime() {
   return isElectronRuntime();
 }
+
+/** Stock mode (the server's stock-mode.mjs): the app started with OMNIRUSH_FARM=1, chats run stock OpenCode on Astra. */
+export function isStockMode() {
+  return isElectronRuntime() && window.__OMNIRUSH_ELECTRON__?.meta?.stockMode === true;
+}

@@ -97,9 +97,11 @@ function EndpointRow(props: { label: string; value: string; children?: ReactNode
         {props.label}
       </div>
       <div className="min-w-0 space-y-2">
-        <div className="truncate font-mono text-xs text-gray-12" title={props.value}>
-          {props.value}
-        </div>
+        {props.value ? (
+          <div className="truncate font-mono text-xs text-gray-12" title={props.value}>
+            {props.value}
+          </div>
+        ) : null}
         {props.children ? <div className="flex flex-wrap gap-1.5">{props.children}</div> : null}
       </div>
     </div>
@@ -277,7 +279,7 @@ function RuntimeStatusCard(props: RuntimeStatusCardProps) {
       {props.detailLines?.length ? (
         <div className="space-y-1 border-t border-gray-6/50 pt-2 text-[11px] text-gray-9">
           {props.detailLines.map((line) => (
-            <div key={line} className="truncate" title={line}>
+            <div key={line}>
               {line}
             </div>
           ))}

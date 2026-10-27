@@ -39,11 +39,14 @@ describe("chat sidebar keeps the height for chats", () => {
     ]) expect(tools).toContain(needle);
   });
 
-  test("the footer is the account row plus one row of rewards, feedback, what's new and Settings", () => {
+  test("the footer is the account row, a labelled feedback row, then one icon row of rewards, what's new and Settings", () => {
     const footer = between('data-testid="sidebar-footer-tools"', "</div>");
-    for (const needle of ["<QualitySpinButtons", 'data-testid="sidebar-send-feedback"', "<WhatsNewIconButton />", 'label={t("settings.tab_general")}']) {
+    for (const needle of ["<QualitySpinButtons", "<WhatsNewIconButton />", 'label={t("settings.tab_general")}']) {
       expect(footer).toContain(needle);
     }
+    const account = between("export function NativeAccountFooter", 'data-testid="sidebar-footer-tools"');
+    expect(account).toContain('data-testid="sidebar-send-feedback"');
+    expect(account).toContain('{t("session.support_feedback")}</span>');
     const spin = between("function QualitySpinButtons", "function WhatsNewIconButton");
     expect(spin).toContain('data-testid="quality-spin-button"');
     expect(spin).toContain('data-testid="quality-footer-next"');
