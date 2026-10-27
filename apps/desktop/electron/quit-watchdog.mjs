@@ -29,7 +29,13 @@ export function descendantPids(rows, rootPid) {
   return found;
 }
 
-/** This machine's processes as {pid, ppid} (empty when they cannot be listed). */
+/** @typedef {(command: string, args: string[], options?: object) => { pid?: number, stdout?: unknown } | undefined} RunSync */
+
+/**
+ * This machine's processes as {pid, ppid} (empty when they cannot be listed).
+ * @param {string} [platform]
+ * @param {RunSync} [run]
+ */
 export function listProcesses(platform = process.platform, run = spawnSync) {
   const result = platform === "win32"
     ? run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }"], { encoding: "utf8", windowsHide: true, timeout: 10_000 })
@@ -40,7 +46,10 @@ export function listProcesses(platform = process.platform, run = spawnSync) {
   });
 }
 
-/** Kills every process below `rootPid` (Windows: taskkill /F; elsewhere SIGKILL). Returns the pids it went for. */
+/**
+ * Kills every process below `rootPid` (Windows: taskkill /F; elsewhere SIGKILL). Returns the pids it went for.
+ * @param {{ rootPid?: number, platform?: string, run?: RunSync, kill?: (pid: number, signal: string) => unknown }} [options]
+ */
 export function killDescendants({ rootPid = process.pid, platform = process.platform, run = spawnSync, kill = process.kill.bind(process) } = {}) {
   const listing = { pid: -1 };
   // The listing's own process (powershell / ps) has ended by now: its pid is left out.
@@ -59,8 +68,9 @@ export function killDescendants({ rootPid = process.pid, platform = process.plat
 /**
  * Armed once when the quit's teardown starts: after `timeoutMs` the app's
  * processes are killed and `exit` runs. Returns a disarm (the teardown ended).
+ * @param {{ timeoutMs?: number, killAll?: () => number[], exit: () => unknown, log?: (message: string) => unknown, setTimer?: (fn: () => void, ms: number) => any, clearTimer?: (timer: any) => void }} options
  */
-export function armQuitWatchdog({ timeoutMs = QUIT_WATCHDOG_MS, killAll = () => killDescendants(), exit, log = () => undefined, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+export function armQuitWatchdog({ timeoutMs = QUIT_WATCHDOG_MS, killAll = () => killDescendants(), exit, log = () => undefined, setTimer = setTimeout, clearTimer = clearTimeout }) {
   const timer = setTimer(() => {
     log(`quit did not finish in ${Math.round(timeoutMs / 1000)} s: ending the engine and the app's other processes`);
     let pids = [];
