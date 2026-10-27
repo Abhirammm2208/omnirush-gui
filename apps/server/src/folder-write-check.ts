@@ -402,7 +402,9 @@ export async function folderWriteGate(sessionId: string, dir: string, options: C
   }
   let pending = inFlight.get(dir);
   if (!pending) {
-    pending = checkFolderWritable(dir, { engineBin: engineBinary ?? process.env.OMNIRUSH_OPENCODE_BIN ?? null, ...options })
+    // Chats run on the 2.x engine (the 1.x one no longer ships): its binary runs the probe.
+    const env = options.env ?? process.env;
+    pending = checkFolderWritable(dir, { engineBin: env.OMNIRUSH_OPENCODE2_BIN?.trim() || engineBinary || env.OMNIRUSH_OPENCODE_BIN?.trim() || null, ...options })
       .finally(() => inFlight.delete(dir));
     inFlight.set(dir, pending);
   }

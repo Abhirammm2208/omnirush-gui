@@ -10,6 +10,7 @@ import { ensureDir, exists, shortId } from "../utils.js";
 import { defaultWorkspaceOmniRushConfig, ensureWorkspaceFiles } from "../workspace-init.js";
 import { seedOmniRushWorkspaceConfigIfEmpty } from "../omnirush-workspace-config-store.js";
 import { workspaceIdForPath, workspaceIdForRemote } from "../workspaces.js";
+import { directoryMatchKey } from "../session-list-fallback.js";
 import { addRoute, type RequestContext, type Route } from "./registry.js";
 
 type JsonResponse = (data: unknown, status?: number) => Response;
@@ -248,14 +249,20 @@ async function persistServerWorkspaceState(config: ServerConfig): Promise<boolea
  */
 export async function addLocalWorkspace(
   config: ServerConfig,
-  input: { folderPath: string; name: string; preset: string; actor?: RequestContext["actor"]; task?: WorkspaceInfo["task"] },
+  input: { folderPath: string; name: string; preset: string; actor?: RequestContext["actor"]; task?: WorkspaceInfo["task"]; platform?: NodeJS.Platform },
 ): Promise<{ workspace: WorkspaceInfo; persisted: boolean }> {
-  const { name, preset } = input;
-  const workspacePath = resolve(input.folderPath);
+  const { preset } = input;
+  // Another spelling of a folder already added (letter case on Windows and macOS, as a trailing slash
+  // anywhere) is that workspace: a second one for the same folder hangs its chats.
+  const requested = resolve(input.folderPath);
+  const existing = config.workspaces.find((entry) => entry.workspaceType !== "remote" && entry.path
+    && directoryMatchKey(entry.path, input.platform) === directoryMatchKey(requested, input.platform));
+  const workspacePath = existing?.path ?? requested;
+  const name = existing?.name ?? input.name;
   await ensureDir(workspacePath);
   await ensureWorkspaceFiles(workspacePath, preset);
 
-  const workspaceId = workspaceIdForPath(workspacePath);
+  const workspaceId = existing?.id ?? workspaceIdForPath(workspacePath);
   // Seed the per-workspace omnirush config in the runtime DB (replaces the
   // legacy `.opencode/omnirush.json` file). No-op if a row already exists.
   await seedOmniRushWorkspaceConfigIfEmpty(

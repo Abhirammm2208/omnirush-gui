@@ -17,9 +17,12 @@ import { SandboxStatusChip } from "@/react-app/domains/session/surface/composer/
 import { SandboxSetupPanel } from "@/react-app/domains/session/surface/sandbox-setup-panel";
 import { SubagentModelMenu } from "@/react-app/domains/session/surface/composer/subagent-model-menu";
 import {
+  persistableComposerDraftText,
   snapshotComposerSessionState,
   type ComposerSessionState,
 } from "@/react-app/domains/session/surface/composer-state-store";
+import { clearSessionDraft, getSessionDraft, saveSessionDraft } from "@/react-app/domains/session/sync/draft-store";
+import { toast } from "@/components/ui/sonner";
 import { encodeComposerMentionValue, type ComposerMentionKind } from "@/react-app/domains/session/surface/composer/mention-encoding";
 import {
   createPastedTextChip,
@@ -46,6 +49,8 @@ export type NewTaskComposerContext = {
   workspaceId: string | null;
   /** Stable identity for draft ownership across workspace, endpoint, and account changes. */
   draftOwnerKey?: string;
+  /** The draft store scope (draft-store.ts): the typed draft is kept there per project, so a remount does not lose it. */
+  draftScope?: string | null;
   selectedModel: ModelRef;
   modelOptions?: readonly ModelOption[];
   modelUnavailable?: boolean;
@@ -114,6 +119,8 @@ const emptyAgents = async (): Promise<Agent[]> => [];
 const emptyCommands = async (): Promise<SlashCommandOption[]> => [];
 const emptyFiles = async (): Promise<string[]> => [];
 const FALLBACK_MODEL: ModelRef = DEFAULT_MODEL;
+/** The new-task draft is stored like a chat's, under this stand-in chat id. */
+export const NEW_TASK_DRAFT_SESSION_ID = "new-task";
 
 /**
  * The real session composer, reused for the "What do you need done?" empty
@@ -165,16 +172,34 @@ export function NewTaskComposer(props: NewTaskComposerProps) {
   const pluginConnectPushRef = useRef(0);
   const workspaceClient = context?.client ?? null;
   const workspaceId = context?.workspaceId ?? null;
+  const draftScope = context?.draftScope ?? null;
+  const draftRestoredRef = useRef(false);
+
+  // Declared before the owner effect below, so a new owner's first pass never stores the previous owner's text.
+  useEffect(() => {
+    if (!draftRestoredRef.current || mountedDraftOwnerKeyRef.current !== draftOwnerKey || !workspaceId) return;
+    // A send on its way keeps its text stored until its chat exists.
+    if (submittingRef.current && !props.draft) return;
+    saveSessionDraft(draftScope, workspaceId, NEW_TASK_DRAFT_SESSION_ID, { text: persistableComposerDraftText(props.draft, pastedText), mode: "prompt" });
+  }, [draftOwnerKey, draftScope, pastedText, props.draft, workspaceId]);
 
   useEffect(() => {
     const holder = continuationHolderRef.current;
     holder.frozen = false;
+    const stored = workspaceId ? getSessionDraft(draftScope, workspaceId, NEW_TASK_DRAFT_SESSION_ID)?.text ?? "" : "";
+    draftRestoredRef.current = true;
+    if (mountedDraftOwnerKeyRef.current === draftOwnerKey && !props.draft && stored) {
+      // Remounted (a card above it, a restart moving the endpoint): the typed draft comes back.
+      holder.state = { ...holder.state, draft: stored };
+      draftRef.current = stored;
+      props.onDraftChange(stored);
+    }
     if (mountedDraftOwnerKeyRef.current !== draftOwnerKey) {
       mountedDraftOwnerKeyRef.current = draftOwnerKey;
-      holder.state = emptyNewTaskComposerState();
-      draftRef.current = "";
+      holder.state = { ...emptyNewTaskComposerState(), draft: stored };
+      draftRef.current = stored;
       submittingRef.current = false;
-      props.onDraftChange("");
+      props.onDraftChange(stored);
       setAttachments([]);
       setMentions({});
       setPastedText([]);
@@ -381,6 +406,8 @@ export function NewTaskComposer(props: NewTaskComposerProps) {
     const revision = draftRevisionRef.current;
     const submitted = snapshotComposerSessionState({ ...submissionHolder.state, draft: originalDraft });
     const resolved = resolvePastedTextPlaceholders(originalDraft, submitted.pasteParts);
+    const submittedDraftScope = draftScope;
+    const submittedWorkspaceId = workspaceId;
     if (!submitted.attachments.length) setPendingPrompt(resolved.replace(/\[attachment [^\]]+\]/g, ""));
     setPreparingAttachments(submitted.attachments.length > 0);
     setSubmissionError(null);
@@ -399,8 +426,13 @@ export function NewTaskComposer(props: NewTaskComposerProps) {
         submitted,
         getContinuation: () => snapshotComposerSessionState(submissionHolder.state),
       });
+      if (submittedWorkspaceId) clearSessionDraft(submittedDraftScope, submittedWorkspaceId, NEW_TASK_DRAFT_SESSION_ID);
     } catch (error) {
-      if (continuationHolderRef.current !== submissionHolder || submissionHolder.frozen) return;
+      if (continuationHolderRef.current !== submissionHolder || submissionHolder.frozen) {
+        // This composer was replaced meanwhile: its text stays stored for the project, say why it was not sent.
+        toast.error(error instanceof Error ? error.message : "Could not create the conversation. Try again.");
+        return;
+      }
       if (!submitted.attachments.length) {
         if (draftRevisionRef.current === revision && !draftRef.current) {
           restoreComposer(submitted);

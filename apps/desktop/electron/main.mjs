@@ -127,6 +127,7 @@ import {
 import { installStdioErrorHandlers } from "./stdio-errors.mjs";
 import { createTurnGuard } from "./turn-guard.mjs";
 import { KEEP_AWAKE_FILE, createKeepAwake } from "./keep-awake.mjs";
+import { armQuitWatchdog } from "./quit-watchdog.mjs";
 import { projectChecklist } from "./buildathon-checklist.mjs";
 import {
   createRendererCrashRecovery,
@@ -3447,6 +3448,8 @@ or use: pnpm dev:worktree`);
     event.preventDefault();
     if (runtimeDisposeInProgress) return;
     showShutdownScreen();
+    // A teardown stuck past its bounds (seen after a sign-out on Windows): the engine and the rest are killed, the app exits.
+    const disarmQuitWatchdog = armQuitWatchdog({ exit: () => app.exit(0), log: (message) => console.warn(`[quit] ${message}`) });
     desktopAutomationRunner.stop();
     browserLoginSync.shutdown();
     // The queued placement events: best effort, never waited for (the rest go next start).
@@ -3470,8 +3473,11 @@ or use: pnpm dev:worktree`);
         keepAwake.stop();
         scheduleBlankSlateProfileCleanup();
         const installUpdateAndQuit = await updateInstall;
-        if (installUpdateAndQuit) installUpdateAndQuit();
-        else {
+        // An update installing on quit is never cut short (the installer quits the app itself).
+        if (installUpdateAndQuit) {
+          disarmQuitWatchdog();
+          installUpdateAndQuit();
+        } else {
           if (restartAfterQuit) app.relaunch();
           app.quit();
         }

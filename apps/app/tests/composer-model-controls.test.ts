@@ -66,7 +66,7 @@ describe("composer model controls", () => {
     const sessionProviderAuthSource = readFileSync(sessionProviderAuthPath, "utf8");
 
     expect(sessionRouteSource).toContain('await refreshCloudProviderSync("manual");');
-    expect(sessionRouteSource).toContain("applyLastUsedModelToSession(session.id)");
+    expect(sessionRouteSource).toContain("applyLastUsedModelToSession(session.id, workspaceId)");
     expect(sessionProviderAuthSource).toContain(
       "setCompletedCloudProviderSync({ context: cloudProviderSyncContext, providerList });",
     );
