@@ -2199,6 +2199,25 @@ function stoppedSendResponse(config: ServerConfig, sessionId: string | null | un
   return jsonResponse({ code: "send_stopped", message: "The send was stopped before it reached the engine." }, 409);
 }
 
+/**
+ * A 2.x model as the window may see it: model overrides and variants can carry credentials too, so only the metadata
+ * needed for selection, and the variants' names (the effort picker), never their settings.
+ */
+export function publicV2Model(value: unknown): Record<string, unknown> | null {
+  if (value === null) return null;
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.providerID !== "string") {
+    throw new ApiError(502, "invalid_engine_response", "Invalid model metadata");
+  }
+  const picked = Object.fromEntries(Object.entries(value).filter(([key]) => [
+    "id", "modelID", "providerID", "canonical", "family", "name", "package",
+    "capabilities", "time", "cost", "status", "enabled", "limit",
+  ].includes(key)));
+  const variants = Array.isArray(value.variants)
+    ? value.variants.flatMap((variant) => (isRecord(variant) && typeof variant.id === "string" ? [{ id: variant.id }] : []))
+    : [];
+  return variants.length ? { ...picked, variants } : picked;
+}
+
 export async function proxyOpencodeV2Request(input: {
   config: ServerConfig;
   request: Request;
@@ -2311,7 +2330,8 @@ export async function proxyOpencodeV2Request(input: {
     throw new ApiError(403, "engine_instructions_managed", "OmniRush.ai instructions are managed by the server");
   }
 
-  if (method === "POST" && sessionId && /^\/api\/session\/[^/]+\/(?:prompt|command|generate)$/.test(routePath)) {
+  // Stock mode (stock-mode.mjs): the engine's own system prompt only, no OmniRush guidance.
+  if (method === "POST" && sessionId && !stockMode() && /^\/api\/session\/[^/]+\/(?:prompt|command|generate)$/.test(routePath)) {
     // Session ownership was verified above. Replace one native instruction
     // entry immediately before admission; never append to conversation text.
     const internalHeaders = new Headers({ authorization: headers.get("authorization") ?? "", "content-type": "application/json" });
@@ -2497,21 +2517,10 @@ export async function proxyOpencodeV2Request(input: {
     return jsonResponse({ data });
   }
   if (method === "GET" && /^\/api\/model(?:\/|$)/.test(decodedPath) && response.ok) {
-    // Model overrides and variants can carry credentials too. Keep only the
-    // metadata needed for selection; request settings remain inside the engine.
+    // Only what selection needs (publicV2Model); request settings remain inside the engine.
     const payload: unknown = await response.json();
     const raw = isRecord(payload) && "data" in payload ? payload.data : payload;
-    const publicModel = (value: unknown) => {
-      if (value === null) return null;
-      if (!isRecord(value) || typeof value.id !== "string" || typeof value.providerID !== "string") {
-        throw new ApiError(502, "invalid_engine_response", "Invalid model metadata");
-      }
-      return Object.fromEntries(Object.entries(value).filter(([key]) => [
-        "id", "modelID", "providerID", "canonical", "family", "name", "package",
-        "capabilities", "time", "cost", "status", "enabled", "limit",
-      ].includes(key)));
-    };
-    return jsonResponse({ data: Array.isArray(raw) ? raw.map(publicModel) : publicModel(raw) });
+    return jsonResponse({ data: Array.isArray(raw) ? raw.map(publicV2Model) : publicV2Model(raw) });
   }
   if (method === "GET" && /^\/api\/event\/*$/.test(decodedPath) && response.ok && response.body) {
     const expected = await realpath(input.workspace.path);

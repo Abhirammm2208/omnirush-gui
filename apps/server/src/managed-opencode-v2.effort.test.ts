@@ -32,3 +32,14 @@ test("the app catalog's efforts come through in catalog order", () => {
   const entry = v2ModelConfig({ id: "gpt-6-astra", name: "GPT 6 Astra", config: catalog["gpt-6-astra"] });
   expect((entry.capabilities as { reasoning: unknown }).reasoning).toEqual({ supported: true, effort: ["low", "high", "xhigh", "max"] });
 });
+
+test("the window's model list keeps the efforts' names and never their settings", async () => {
+  const { publicV2Model } = await import("./server.js");
+  const model = publicV2Model({
+    id: "gpt-6-astra", providerID: "omnirush", name: "GPT 6 Astra", settings: { apiKey: "secret" },
+    variants: [{ id: "low", settings: { reasoningEffort: "low", apiKey: "secret" } }, { id: "max", settings: {} }],
+  });
+  expect(model).toEqual({ id: "gpt-6-astra", providerID: "omnirush", name: "GPT 6 Astra", variants: [{ id: "low" }, { id: "max" }] });
+  expect(JSON.stringify(model)).not.toContain("secret");
+  expect(publicV2Model({ id: "plain", providerID: "omnirush" })).toEqual({ id: "plain", providerID: "omnirush" });
+});
