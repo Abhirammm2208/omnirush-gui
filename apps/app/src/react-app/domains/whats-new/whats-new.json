@@ -3,6 +3,16 @@
   "schema": 1,
   "cli": [
     {
+      "version": "2.7.4",
+      "date": "2026-10-27",
+      "new": [],
+      "improved": [],
+      "fixed": [
+        "Changing the reasoning effort in the middle of a chat now applies to the next message, instead of the chat staying on the effort it started with.",
+        "With a separate OmniRush folder per login (OMNIRUSH_DIR), the folder's name no longer shows up in what the agent is told or in its PATH."
+      ]
+    },
+    {
       "version": "2.7.3",
       "date": "2026-10-26",
       "new": [
@@ -316,6 +326,19 @@
     }
   ],
   "desktop": [
+    {
+      "version": "3.8.1",
+      "date": "2026-10-27",
+      "new": [],
+      "improved": [
+        "The sidebar shows your profile with its name and a labelled Send feedback button, and its tools explain themselves when you point at them.",
+        "On a Mac with no Docker-compatible app, the sandbox now sets up OmniRush's own Linux VM instead of running the project on the Mac."
+      ],
+      "fixed": [
+        "The reasoning effort can be picked again: the effort you choose, also in the middle of a chat, is the one the next message runs at.",
+        "Claude access given to or taken from your account now shows without restarting the app, and a Claude message on an account without access is refused at once instead of after a long wait."
+      ]
+    },
     {
       "version": "3.8.0",
       "date": "2026-10-26",
