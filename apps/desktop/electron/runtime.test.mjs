@@ -647,3 +647,17 @@ describe("upload queue clear marker", () => {
     }
   });
 });
+
+describe("project folder", () => {
+  it("the app writes no opencode.jsonc into the project (the model would see a file nobody made)", async () => {
+    const source = await readFile(fileURLToPath(new URL("./runtime.mjs", import.meta.url)), "utf8");
+    assert.doesNotMatch(source, /opencode\.ai\/config\.json/);
+    const dir = await mkdtemp(path.join(os.tmpdir(), "omnirush-project-"));
+    try {
+      assert.equal(await prepareRuntimeWorkspaceRoot(dir), dir);
+      await assert.rejects(readFile(path.join(dir, "opencode.jsonc"), "utf8"), { code: "ENOENT" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

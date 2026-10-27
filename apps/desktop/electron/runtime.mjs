@@ -21,7 +21,6 @@ import {
   normalizeWorkspaceRootPath,
   omnirushEnvStorePath,
   omnirushServerConfigPath,
-  resolveWorkspaceOpencodeConfigPath,
 } from "@omnirush/paths";
 import {
   dedupeCertificates,
@@ -528,15 +527,6 @@ function assertOmniRushServerReady(snapshot) {
     throw new Error("OmniRush.ai server did not report an access token after startup.");
   }
   return snapshot;
-}
-
-async function fileExists(targetPath) {
-  try {
-    await readFile(targetPath);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function readJsonFile(targetPath, fallback) {
@@ -1912,17 +1902,6 @@ export function createRuntimeManager({
     }
   }
 
-  async function ensureOpencodeConfig(projectDir) {
-    const configPath = resolveWorkspaceOpencodeConfigPath(projectDir);
-    if (await fileExists(configPath)) return;
-    await mkdir(path.dirname(configPath), { recursive: true });
-    await writeFile(
-      configPath,
-      `${JSON.stringify({ $schema: "https://opencode.ai/config.json" }, null, 2)}\n`,
-      "utf8",
-    );
-  }
-
   async function issueOwnerToken(baseUrl, hostToken) {
     const payload = await fetchJson(
       `${baseUrl.replace(/\/+$/, "")}/tokens`,
@@ -2463,7 +2442,6 @@ export function createRuntimeManager({
             safeProjectDir = await prepareRuntimeWorkspaceRoot(safeProjectDir, {
               platform: workspacePlatform,
               mkdirImpl: workspaceMkdir,
-              ensureConfig: ensureOpencodeConfig,
             });
           } catch (error) {
             settleAfterWorkspacePreparationFailure();
@@ -2481,7 +2459,6 @@ export function createRuntimeManager({
       safeProjectDir = await prepareRuntimeWorkspaceRoot(safeProjectDir, {
         platform: workspacePlatform,
         mkdirImpl: workspaceMkdir,
-        ensureConfig: ensureOpencodeConfig,
       });
     } catch (error) {
       settleAfterWorkspacePreparationFailure();
