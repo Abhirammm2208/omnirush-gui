@@ -91,7 +91,6 @@ import type { BestPracticesClient } from "@/react-app/domains/settings/best-prac
 import type { AgentAssistClient } from "@/react-app/domains/settings/agent-assist";
 import { AuthorizedFoldersPanel } from "@/react-app/domains/settings/panels/authorized-folders-panel";
 import { BrowserLoginsPanel } from "../domains/browser-logins/browser-logins-panel";
-import { EffectivePermissionsPanel } from "@/react-app/domains/settings/panels/effective-permissions-panel";
 import { SettingsStack } from "@/react-app/domains/settings/settings-section";
 import { AdvancedView } from "@/react-app/domains/settings/pages/advanced-view";
 import { AppearanceView } from "@/react-app/domains/settings/pages/appearance-view";
@@ -552,7 +551,6 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
   const [themeMode, setThemeModeState] = useState<ThemeMode>(getInitialThemeMode);
   const [hideTitlebar, setHideTitlebar] = useState(() => readStoredBoolean(SETTINGS_HIDE_TITLEBAR_KEY, false));
   const [configActionStatus, setConfigActionStatus] = useState<string | null>(null);
-  const [permissionsRefreshToken, setPermissionsRefreshToken] = useState(0);
   const [revealConfigBusy, setRevealConfigBusy] = useState(false);
   const [resetConfigBusy, setResetConfigBusy] = useState(false);
   const [renameWorkspaceId, setRenameWorkspaceId] = useState<string | null>(null);
@@ -2320,7 +2318,6 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
               activeWorkspaceType={workspaceType}
               onConfigUpdated={() => {
                 setConfigActionStatus(t("settings.config_updated"));
-                setPermissionsRefreshToken((token) => token + 1);
                 void providerAuthStore.refreshProviders();
                 void connectionsStore.refreshMcpServers();
               }}
@@ -2560,13 +2557,6 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
                 onCleanupOmniRushDockerContainers={() => {}}
               />
             ) : null}
-            <EffectivePermissionsPanel
-              omnirushServerClient={omnirushClient}
-              omnirushServerStatus={routeOmniRushStatus}
-              omnirushServerCapabilities={routeOmniRushCapabilities}
-              runtimeWorkspaceId={runtimeWorkspaceId}
-              refreshToken={permissionsRefreshToken}
-            />
           </SettingsStack>
         );
       case "appearance":
