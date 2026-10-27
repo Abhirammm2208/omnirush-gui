@@ -120,8 +120,13 @@ func main() {
 			os.Exit(125)
 		}
 	}
+	if err != nil && !isDialError(err) {
+		// The command reached boxd and may have run: never again (a second git commit, a second install).
+		fmt.Fprintln(os.Stderr, retryFailed(err))
+		os.Exit(125)
+	}
 	if err != nil {
-		// boxd is not reachable (restarting, crashed): run it with the runtime's exec instead.
+		// boxd is not reachable (restarting, crashed): nothing started, so the runtime's exec runs it instead.
 		code = runtimeExec(rec, req)
 		timing.Fallback = true
 	}

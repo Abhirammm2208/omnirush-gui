@@ -215,3 +215,15 @@ func TestRetryFailedSaysWhatBroke(t *testing.T) {
 		}
 	}
 }
+
+// A command that reached boxd may have run: only a failed dial (nothing started) may run it another way.
+func TestOnlyADialFailureRunsTheCommandAnotherWay(t *testing.T) {
+	if !isDialError(&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: connection refused")}) {
+		t.Fatal("a refused dial started nothing")
+	}
+	for _, err := range []error{errors.New("EOF"), &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}, &net.OpError{Op: "write", Net: "tcp", Err: errors.New("broken pipe")}} {
+		if isDialError(err) {
+			t.Fatalf("%v came after the command started", err)
+		}
+	}
+}
