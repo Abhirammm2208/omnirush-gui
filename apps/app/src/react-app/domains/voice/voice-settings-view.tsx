@@ -131,7 +131,9 @@ export function VoiceSettingsView(props: { client: VoiceClient | null }) {
               <Switch
                 aria-label="Dictation"
                 data-testid="voice-settings-enabled"
-                checked={settings.enabled}
+                // Unavailable: show off and locked, keep the saved choice for when it becomes available.
+                checked={settings.enabled && !availability}
+                disabled={Boolean(availability)}
                 onCheckedChange={(enabled) => {
                   settings.update({ enabled });
                   if (!enabled) releaseMicrophone();
