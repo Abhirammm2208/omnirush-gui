@@ -106,6 +106,7 @@ import {
 } from "@/react-app/shell/route-workspaces";
 import { reloadEngineWithDesktopFallback } from "@/react-app/shell/engine-reload-escalation";
 import { useLocal } from "@/react-app/kernel/local-provider";
+import { projectModelKey, rememberProjectModel, useProjectModelLocal } from "./project-model-prefs";
 import { usePlatform } from "@/react-app/kernel/platform";
 import {
   SessionPage,
@@ -406,7 +407,7 @@ export function SessionRoute() {
   const toggleSidebar = useUiStateStore((state) => state.toggleSidebar);
   const denAuth = useDenAuth();
   const { config: shellConfig } = useShellConfig();
-  const local = useLocal();
+  const appLocal = useLocal();
   const automationDeploymentEnabled = useAutomationDeploymentEnabled();
   // Desktop and Web share one Automations surface; the runtime only decides
   // the placement of what each creates. Den's deployment flag stays the gate.
@@ -535,6 +536,8 @@ export function SessionRoute() {
     onServerSettingsChanged: () => setOmniRushServerSettingsVersion((value) => value + 1),
     onHostInfo: setOmniRushServerHostInfoState,
   });
+  // Model picks here are the open project's own (project-model-prefs.ts); Settings keeps the app default.
+  const local = useProjectModelLocal(appLocal, selectedWorkspaceId);
   // "Send feedback" from a menu that does not know the open session (Help menu, sidebar).
   useEffect(() => {
     setFeedbackCurrentSession(selectedSessionId ?? null);
@@ -2041,6 +2044,7 @@ export function SessionRoute() {
         selectedWorkspaceEndpoint?.opencodeBaseUrl ?? null,
         selectedWorkspaceId || null,
       ]),
+      draftScope: sessionDraftScope,
       selectedModel: local.prefs.defaultModel ?? { providerID: "", modelID: "" },
       modelOptions: organizationAssignedModelOptions,
       modelUnavailable: selectedModelUnavailable,
@@ -2274,23 +2278,16 @@ export function SessionRoute() {
   );
 
 
-  const applyLastUsedModelToSession = useCallback((sessionId: string) => {
-    const previous = selectedSessionId ? getSessionModelSelection(selectedSessionId) : null;
-    const model = previous?.model ?? local.prefs.defaultModel;
+  const applyLastUsedModelToSession = useCallback((sessionId: string, workspaceId: string) => {
+    // The open chat's model carries over only inside its own project; another project starts on its own pick or the app default.
+    const previous = selectedSessionId && workspaceId === selectedWorkspaceId ? getSessionModelSelection(selectedSessionId) : null;
+    const own = previous ?? getSessionModelSelection(projectModelKey(workspaceId));
+    const model = own?.model ?? appLocal.prefs.defaultModel;
     if (!model?.providerID || !model.modelID) return;
-    const variant = previous ? previous.variant : (local.prefs.modelVariant ?? null);
+    const variant = own ? own.variant : (appLocal.prefs.modelVariant ?? null);
     useSessionModelStore.getState().setModel(sessionId, model, variant);
-    local.setPrefs((current) => {
-      if (
-        current.defaultModel?.providerID === model.providerID
-        && current.defaultModel.modelID === model.modelID
-        && (current.modelVariant ?? null) === variant
-      ) {
-        return current;
-      }
-      return { ...current, defaultModel: model, modelVariant: variant };
-    });
-  }, [local, selectedSessionId]);
+    if (previous) rememberProjectModel(workspaceId, previous);
+  }, [appLocal.prefs.defaultModel, appLocal.prefs.modelVariant, selectedSessionId, selectedWorkspaceId]);
 
   const handleCreateTaskInWorkspaceWithOpenMode = useCallback(async (
     workspaceId: string,
@@ -2347,7 +2344,7 @@ export function SessionRoute() {
       }
       useComposerStateStore.setState({ pendingFocusSessionId: session.id });
       rememberPendingCreatedSession(workspaceId, session.id);
-      applyLastUsedModelToSession(session.id);
+      applyLastUsedModelToSession(session.id, workspaceId);
       setSessionsByWorkspaceId((current) => {
         const next = {
           ...current,
@@ -3401,6 +3398,10 @@ export function SessionRoute() {
             ).session.create({ directory: workspacePath || undefined })
               .then((result) => unwrap(result))
           : null;
+        // A supplied prompt never just disappears: without its chat it goes back to the composer with this error.
+        if (!session && (firstTaskPrompt || firstTaskAttachments.length > 0)) {
+          throw new Error("The project was added but its chat could not be started yet. Send the message again.");
+        }
         setLegacySelectedWorkspaceId(targetWorkspaceId);
         writeActiveWorkspaceId(targetWorkspaceId);
         if (projectLabel) {
@@ -3953,7 +3954,7 @@ export function SessionRoute() {
             }
           }
           rememberPendingCreatedSession(workspaceId, session.id);
-          applyLastUsedModelToSession(session.id);
+          applyLastUsedModelToSession(session.id, workspaceId);
           setSessionsByWorkspaceId((current) => ({
             ...current,
             [workspaceId]: mergeWorkspaceRouteSession(current[workspaceId] ?? [], session),
