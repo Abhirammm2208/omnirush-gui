@@ -279,7 +279,7 @@ function RuntimeStatusCard(props: RuntimeStatusCardProps) {
       {props.detailLines?.length ? (
         <div className="space-y-1 border-t border-gray-6/50 pt-2 text-[11px] text-gray-9">
           {props.detailLines.map((line) => (
-            <div key={line} className="truncate" title={line}>
+            <div key={line}>
               {line}
             </div>
           ))}
