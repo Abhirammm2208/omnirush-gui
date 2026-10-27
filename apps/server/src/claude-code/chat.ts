@@ -25,6 +25,9 @@ export function claudeNotAllowedMessage(name: string): string {
 export type ClaudeChatInput = { op?: unknown; sessionID?: unknown; model?: unknown; resume?: unknown; earlier?: unknown; uuid?: unknown; ok?: unknown; directory?: unknown };
 export type ClaudeChatAnswer = { ok: true; token?: string; baseUrl?: string; client?: string } | { ok: false; message: string };
 
+/** What the person sees when the server could not say whether Claude is available (the detail goes to the log). */
+export const CLAUDE_ACCESS_CHECK_FAILED = "Couldn't check your Claude access. Try again.";
+
 export function claudeChatRoute(deps: {
   access: () => Promise<ClaudeAccess>;
   authorize: (context: ClaudeAuthorization) => Promise<ClaudeGrant>;
@@ -49,7 +52,10 @@ export function claudeChatRoute(deps: {
     if (input.op !== "grant") return refuse("Unknown Claude request.");
     const model = typeof input.model === "string" ? input.model : "";
     let account: ClaudeAccess;
-    try { account = await deps.access(); } catch (error) { return refuse(error instanceof Error ? error.message : "Claude could not start."); }
+    try { account = await deps.access(); } catch (error) {
+      deps.log?.("warn", "claude: no access answer", { error: error instanceof Error ? error.message : String(error) });
+      return refuse(CLAUDE_ACCESS_CHECK_FAILED);
+    }
     const entry = account.catalog?.find((e) => e.id === model);
     if (!entry) return refuse(`${model || "This model"} isn't offered here.`);
     const pinned = deps.pin(sessionID);

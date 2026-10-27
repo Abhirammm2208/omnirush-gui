@@ -62,7 +62,12 @@ function budgetSnapshot(value: unknown, context: ClaudeAuthorization): ClaudeBud
   };
 }
 
-async function read(response: Response): Promise<unknown> {
+/** The cap for token answers (they hold credentials and are small). */
+const TOKEN_ANSWER_BYTES = 64 * 1024;
+/** device/me and capabilities list every device row of the account: thousands on a long-used test or farm account. */
+const ACCOUNT_ANSWER_BYTES = 16 * 1024 * 1024;
+
+async function read(response: Response, limit = TOKEN_ANSWER_BYTES): Promise<unknown> {
   // Device responses contain credentials. Never include their bodies in errors.
   if (!response.ok) {
     const reason = response.status === 409 ? "The session's model or capture contract conflicts with its backend binding"
@@ -81,7 +86,7 @@ async function read(response: Response): Promise<unknown> {
     while (true) {
       const next = await reader.read(); if (next.done) break;
       bytes += next.value.byteLength;
-      if (bytes > 64 * 1024) throw new Error("Invalid Claude authorization response");
+      if (bytes > limit) throw new Error("Invalid Claude authorization response");
       chunks.push(next.value);
     }
     try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
@@ -98,12 +103,12 @@ export class ClaudeDeviceAccess {
 
   /** `fresh`: ask the server again now (a turn's start), not the answer of the last 30 s. */
   async access(options: { fresh?: boolean } = {}): Promise<ClaudeAccess> {
-    const account = await read(await this.request("device/me"));
+    const account = await read(await this.request("device/me"), ACCOUNT_ANSWER_BYTES);
     if (!record(account) || typeof account.id !== "string" || !account.id) throw new Error("Sign in to OmniRush to use Claude Code");
     if (options.fresh || !this.capability || this.capability.owner !== account.id || Date.now() >= this.capability.expiresAt) {
       let models: string[] = [], catalog: ClaudeCatalogEntry[] = [], reason: string | null = "unavailable";
       try {
-        const value = await read(await this.request("collect/capabilities"));
+        const value = await read(await this.request("collect/capabilities"), ACCOUNT_ANSWER_BYTES);
         const code = record(value) ? value.claude_code : null;
         if (record(code)) {
           // The catalog is shown to every account; `models` (what may run) only to allowed ones.

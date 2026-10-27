@@ -1892,7 +1892,8 @@ export class OmniRushGatewayBroker {
           await response.body?.cancel().catch(() => undefined);
           return null;
         }
-        const text = await boundedText(response, 256 * 1024);
+        // device/me lists every device row of the account: thousands on a long-used test or farm account.
+        const text = await boundedText(response, 16 * 1024 * 1024);
         const payload: unknown = text === null ? null : JSON.parse(text);
         const id = isRecord(payload) && typeof payload.id === "string" ? payload.id.trim() : "";
         if (id) this.knownAccountId = id;

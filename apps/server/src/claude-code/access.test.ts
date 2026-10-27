@@ -47,3 +47,17 @@ test("a 403 from the token mint forgets the cached access", async () => {
   expect((await access.access()).models).toEqual([]);
   expect(state.calls.filter((call) => call === "collect/capabilities").length).toBe(before + 1);
 });
+
+test("an account with many devices (a large device/me answer) still gets its Claude access", async () => {
+  const devices = Array.from({ length: 2000 }, (_, i) => ({ id: `dev-${i}`, name: `device ${i}`, revoked_at: "2026-10-27T00:00:00Z" }));
+  const request = async (route: string) => {
+    if (route === "device/me") return Response.json({ id: "acct", devices });
+    if (route === "collect/capabilities") return Response.json({ claude_code: { enabled: true, models: ["claude-opus-5-5"], catalog: [{ id: "claude-opus-5-5", display_name: "Claude Opus 5.5" }] } });
+    throw new Error(route);
+  };
+  const body = JSON.stringify({ id: "acct", devices });
+  expect(body.length).toBeGreaterThan(64 * 1024);
+  const answer = await new ClaudeDeviceAccess(request, "desktop/test").access();
+  expect(answer.owner).toBe("acct");
+  expect(answer.models).toEqual(["claude-opus-5-5"]);
+});
