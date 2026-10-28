@@ -437,10 +437,12 @@ export class ContextCapture {
       for (const call of calls) {
         let match = matchCall(call, windows, now);
         if (!match) {
-          if (!final && now - call.start < UNMATCHED_INSTALL_MS) continue;
           // The session its wrapper names (OMNIRUSH_SESSION), when it is one of these.
           const named = call.meta.session ?? call.hooks[0]?.meta.session;
           const own = named ? this.sessions.get(named) : undefined;
+          // A call that names its chat but no engine call never gets a window to wait for: Claude Code's own
+          // commands, its sub-agents' among them (the Claude provider names the chat, not each call).
+          if (!final && !(own && !notedCallId(call)) && now - call.start < UNMATCHED_INSTALL_MS) continue;
           match = own ? { sessionId: own.id, callId: null, start: call.start, end: null, cwd: null, command: null, turn: own.turn } : active.length === 1 ? { sessionId: active[0]!.id, callId: null, start: call.start, end: null, cwd: null, command: null, turn: active[0]!.turn } : null;
         }
         const state = match ? this.sessions.get(match.sessionId) : undefined;
